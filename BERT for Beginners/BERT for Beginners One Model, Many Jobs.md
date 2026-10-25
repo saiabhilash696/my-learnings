@@ -1,6 +1,6 @@
 # BERT for Beginners: One Model, Many Jobs
 
-**Embeddings, search, reranking, classification, NER, topic modelling, question answering, “text generation” (and its limits), fine-tuning, training data, and data drift — explained in plain English**
+**Embeddings, search, reranking, classification (including few-shot learning with SetFit), NER (including GLiNER for labels you invent on the spot), topic modelling (including the UMAP, HDBSCAN and c-TF-IDF inside BERTopic), question answering, “text generation” (and its limits), fine-tuning, training data, and data drift — explained in plain English**
 
 This guide is a beginner-friendly rewrite of the longer “Fine-Tuning Embedding Models” material. Nothing important was dropped, but every idea is explained with an everyday analogy first, then a small picture, then short code you can run.
 
@@ -32,6 +32,14 @@ This guide is a beginner-friendly rewrite of the longer “Fine-Tuning Embedding
 pip install -U transformers sentence-transformers datasets accelerate scikit-learn \
                seqeval evaluate bertopic keybert peft mlflow
 ```
+
+For the SetFit, GLiNER and BERTopic sections, add:
+
+```bash
+pip install -U setfit gliner umap-learn hdbscan
+```
+
+(BERTopic already installs `umap-learn` and `hdbscan`; they are listed so you can import them directly. If pip complains about conflicting package versions, install SetFit and GLiNER into separate virtual environments.)
 
 ---
 
@@ -129,7 +137,7 @@ There are two big families of text models:
    text in ─▶ [ reads all at once ] ─▶ numbers / labels      prompt ─▶ [ predicts next word ] ─▶ word ─▶ word ─▶ …
 ```
 
-This is why “text generation” needs special care with BERT. We cover it honestly in §3.11.
+This is why “text generation” needs special care with BERT. We cover it honestly in Section3.11.
 
 ## 1.5 Pre-training vs fine-tuning
 
@@ -222,21 +230,23 @@ BERT’s body (the part that understands language) is the same for every job. Wh
 | 3 | **Reranking** | “Of these 50 results, which are truly best?” | Re-ordered list | Cross-encoder reads query and passage together | Yes |
 | 4 | **Text classification** | “Is this positive or negative? Spam? Which topic?” | One label | `[CLS]` vector + classification head | Yes |
 | 5 | **Sentence-pair classification** | “Do these two sentences agree? Are they duplicates?” | One label for the pair | Two sentences joined with `[SEP]` | Yes |
-| 6 | **Zero-shot classification** | “Label this using categories I just made up” | A label, no training | Pair classification trick (§3.5) | Yes (via NLI model) |
+| 6 | **Zero-shot classification** | “Label this using categories I just made up” | A label, no training | Pair classification trick (Section 3.5) | Yes (via NLI model) |
 | 7 | **NER** | “Highlight every person, place, product” | A tag per word | Token-tagging head | Yes |
 | 8 | **POS tagging / chunking** | “Mark nouns, verbs, phrases” | A tag per word | Same head as NER, different labels | Yes |
 | 9 | **Extractive question answering** | “Where in this paragraph is the answer?” | A span of the text | Start/end head | Yes |
 | 10 | **Fill-in-the-blank** | “Which word fits here?” | Candidate words | Masked-language head | Yes |
-| 11 | **Topic modelling** | “What themes are in these 10,000 documents?” | Topic groups with names | BERTopic: embed, cluster, name | Yes (add-on) |
+| 11 | **Topic modelling** | “What themes are in these 10,000 documents?” | Topic groups with names | BERTopic: embed, shrink (UMAP), cluster (HDBSCAN), name (c-TF-IDF); see Section 3.8a | Yes (add-on) |
 | 12 | **Clustering** | “Group similar texts together” | Group IDs | Embed, then K-Means or HDBSCAN | Yes (add-on) |
 | 13 | **Keyword extraction** | “What are the key phrases?” | A few phrases | KeyBERT: phrases closest to the document vector | Yes (add-on) |
 | 14 | **Extractive summarisation** | “Pick the most important sentences” | A shortlist of sentences | Sentences closest to the document’s centre | Yes (add-on) |
 | 15 | **Duplicate / near-duplicate finding** | “Which texts are basically the same?” | Groups of repeats | Embeddings plus a similarity cut-off | Yes |
 | 16 | **Multiple choice** | “Which of these four answers fits?” | A choice | Multiple-choice head | Yes |
 | 17 | **Drift monitoring** | “Is today’s data different from training?” | An alarm | Compare embeddings over time (Part 8) | Yes (add-on) |
-| 18 | **Text generation** | “Write me a paragraph” | New text | **Not what BERT is built for.** Workarounds in §3.11 | **No (honest answer)** |
+| 18 | **Text generation** | “Write me a paragraph” | New text | **Not what BERT is built for.** Workarounds in Section 3.11 | **No (honest answer)** |
+| 19 | **Few-shot classification (SetFit)** | “Label my texts when I have only a handful of examples per category” | One label | A sentence-BERT body fine-tuned on *pairs* of examples, then a small classifier on top (Section 3.5a) | Yes (add-on) |
+| 20 | **Zero-shot NER (GLiNER)** | “Highlight entity types I invent right now, with no training” | A span of text with a type | A BERT-style encoder matches word spans against label names (Section 3.6a) | Yes (add-on) |
 
-Rows 1–17 are BERT’s home turf. Row 18 is where BERT needs help from a different kind of model.
+Rows 1–17, 19 and 20 are BERT’s home turf. Row 18 is where BERT needs help from a different kind of model.
 
 ## 2.3 A mental shortcut: what comes out?
 
@@ -330,7 +340,7 @@ for hit in util.semantic_search(q_vec, doc_vecs, top_k=3)[0]:
 0.08  Refunds are issued within 14 days of purchase if the item is unused.
 ```
 
-Notice the query never says “reset”, and still the right document wins. Notice also the runner-up: the notifications document also says “Go to Settings >”, so it looks similar. Hold that thought for §3.3 and §6.1.
+Notice the query never says “reset”, and still the right document wins. Notice also the runner-up: the notifications document also says “Go to Settings >”, so it looks similar. Hold that thought for Section 3.3 and Section 6.1.
 
 For millions of documents, store vectors in a *vector database or index* (FAISS, Qdrant, pgvector…) instead of a Python list. The idea is identical.
 
@@ -384,12 +394,13 @@ The scores are raw (not 0–1); only the **order** matters. The look-alike “no
 
 **Analogy:** a mailroom worker reads each letter and drops it in a pigeonhole: *complaint*, *invoice*, *spam*. Classification gives each text **one label** from a list you define. Common uses: sentiment, spam detection, intent detection (“what does the customer want?”), routing support tickets.
 
-There are three ways, from least to most effort:
+There are three main ways, from least to most effort (with a few-shot upgrade, SetFit, between B and C):
 
 | Way | Effort | Needs your labelled data? | Use when |
 | --- | --- | --- | --- |
 | **A. Ready-made model** | One line | No | Standard tasks like sentiment |
 | **B. Embeddings + a simple classifier** | 10 lines | A little (tens of examples per class) | Quick, solid baseline; labels change often |
+| **B+. SetFit** (Section 3.5a) | About 20 lines | Very little (8–16 per class) | You have only a handful of examples and plain embeddings are not accurate enough |
 | **C. Fine-tune BERT** (Part 6) | Moderate | Hundreds to thousands | Best accuracy on your own categories |
 
 **A. Ready-made:**
@@ -442,6 +453,8 @@ The embedding does the hard work of understanding language; the tiny classifier 
    ─────────────────────┴──────────────────────────────────  • •
 ```
 
+> **Only a handful of examples, and way B is not accurate enough?** Section 3.5a (SetFit) goes one step further: it also *moves the pins* on the meaning map so that your categories form clearer clouds before the borders are drawn.
+
 ### Sentence-pair classification (“the judge comparing two statements”)
 
 Sometimes the thing you classify is a **pair** of texts: *Do these two sentences agree, contradict, or neither?* (called NLI, natural language inference), or *Are these two support tickets duplicates?* BERT handles this by gluing the two sentences together: `[CLS] sentence A [SEP] sentence B [SEP]`.
@@ -484,6 +497,170 @@ billing 0.91
 
 (That specific model is BART-based; the same idea works with BERT-family NLI models such as DeBERTa. Zero-shot is great to start with and to bootstrap labels, but a fine-tuned model on your own data is usually more accurate.)
 
+## 3.5a SetFit: few-shot classification (“a few examples, turned into many pairs”)
+
+**The situation.** You have your own categories, but only a **handful of labelled examples** for each (say 8 support tickets per category), because labelling is slow and costly. Zero-shot (Section 3.5) needs no examples, but it is often not accurate enough on *your* categories. A normal fine-tune (Section 6.2) wants hundreds per category. **SetFit** is built for the gap in between: *dozens of examples, not thousands.*
+
+SetFit is short for **S**entence **T**ransformer **Fi**ne-**t**uning. It was published in 2022 by Hugging Face and partners in a paper called “Efficient Few-Shot Learning Without Prompts.”
+
+### The idea: ask “do these two belong together?”
+
+**Analogy:** you hire a new librarian and can only show them **four books per shelf**. If you say “memorise this: this book goes on shelf 3”, four books teach them very little. So you change the game. You hold up *two* books and ask a much easier question: **“Do these two belong on the same shelf?”** Twelve books can be paired up in 66 different ways, so twelve examples turn into **66 small lessons**. After enough lessons the librarian has a feel for what “belongs together” means in *your* library. Only then do you paint the labels on the shelves.
+
+That is exactly SetFit’s recipe. It has two stages:
+
+```text
+  STAGE 1  Reshape the meaning map          (the body learns from PAIRS)
+
+    12 labelled texts ──▶ make pairs ──▶ ("card declined", "payment failed")     same class → 1.0
+                                         ("card declined", "forgot password")    different  → 0.0
+
+    Training pulls same-class pins together and pushes different-class pins apart.
+
+  STAGE 2  Draw the borders                 (the head learns the labels)
+
+    embed each labelled text with the reshaped body ──▶ fit a LogisticRegression
+```
+
+```text
+   BEFORE stage 1                              AFTER stage 1
+
+     • payment   • login                         • •  payment            • •  login
+        • refund   • payment                      •
+      • login    • refund                                   • •  refund
+                                                             •
+   clouds overlap, borders are hard            clouds are apart, a simple border works
+```
+
+The training style in stage 1 is called **contrastive learning**: learn by *contrast* (“these two are alike, those two are not”) rather than by naming things.
+
+**How is this different from way B in Section 3.4?** Way B kept the meaning map **frozen** and only drew borders (that is stage 2 alone). SetFit adds stage 1: it first **moves the pins** so your categories form clearer clouds. With very few examples, that is often the difference between “okay” and “good.”
+
+### The ideology: why this works with so little data
+
+1. **Learn by comparing, not by naming.** “Are these two alike?” is an easier question than “which of 20 categories is this?”, and it needs less data to answer.
+2. **Squeeze many lessons out of every example.** *N* labelled texts make about *N*²/2 pairs, so the body sees far more training signals than you have examples.
+3. **Stay small and prompt-free.** No giant model, and no hand-written prompts such as “Does this ticket sound like a refund? Answer yes or no.” The body is a small sentence-transformer (the family from Section 3.1) and the head is plain scikit-learn. Training takes minutes and predictions take milliseconds.
+
+In the authors’ experiments, a few examples per class were often competitive with fine-tuning much larger models on far more data. Treat that as encouraging, not as a promise: **your own locked exam (Part 7) decides.**
+
+### See the pair-making with your own eyes
+
+This is the idea in plain Python. No model is needed:
+
+```python
+from itertools import combinations
+
+texts = [
+    "My card was declined", "Payment failed at checkout", "The transaction did not go through", "Charged twice for one order",
+    "I forgot my password", "Cannot log in to my account", "Reset my login credentials", "Locked out of my account",
+    "I want my money back", "How do I return this item?", "Please refund my order", "Send the refund to my card",
+]
+labels = ["payment"] * 4 + ["login"] * 4 + ["refund"] * 4
+
+pos, neg = [], []
+for (i, a), (j, b) in combinations(list(enumerate(texts)), 2):
+    (pos if labels[i] == labels[j] else neg).append((a, b))
+
+n = max(len(pos), len(neg))
+print(f"labelled examples        : {len(texts)}")
+print(f"possible pairs           : {len(pos) + len(neg)}")
+print(f"  same class (label 1.0) : {len(pos)}")
+print(f"  different  (label 0.0) : {len(neg)}")
+print(f"balanced training set    : {n} positive + {n} negative = {2 * n} pairs")
+```
+
+**Output (executed):**
+
+```text
+labelled examples        : 12
+possible pairs           : 66
+  same class (label 1.0) : 18
+  different  (label 0.0) : 48
+balanced training set    : 48 positive + 48 negative = 96 pairs
+```
+
+Twelve examples became 66 possible pairs. Different-class pairs (48) outnumber same-class pairs (18), so SetFit’s default strategy, `"oversampling"`, **repeats positive pairs** until the two kinds are equal in number: 48 + 48 = 96 lessons.
+
+> **Watch the growth.** Pairs grow with the *square* of your data: 12 examples give 66 pairs, 100 give 4,950, 1,000 give 499,500. Training time grows with them. If it gets slow, cap the number of pairs with `num_iterations` (see the knobs below).
+
+### The real thing
+
+```python
+from datasets import Dataset
+from setfit import SetFitModel, Trainer, TrainingArguments
+
+label_names = ["payment", "login", "refund"]
+
+train_ds = Dataset.from_dict({
+    "text":  texts,                                    # the 12 examples from above
+    "label": [0] * 4 + [1] * 4 + [2] * 4,              # 0 = payment, 1 = login, 2 = refund
+})
+exam_ds = Dataset.from_dict({                          # the locked exam: never used for training (Part 7)
+    "text":  ["The payment keeps failing", "I can't sign in", "I'd like to return my purchase",
+              "Why was I charged twice?", "Password reset email never came", "Give me a refund please"],
+    "label": [0, 1, 2, 0, 1, 2],
+})
+
+model = SetFitModel.from_pretrained("sentence-transformers/all-MiniLM-L6-v2", labels=label_names)
+
+args = TrainingArguments(batch_size=16, num_epochs=1)  # one pass over the pairs is usually enough
+trainer = Trainer(model=model, args=args, train_dataset=train_ds, eval_dataset=exam_ds)
+trainer.train()                                        # stage 1 (pairs) and stage 2 (head) happen automatically
+
+print(trainer.evaluate())
+
+new = ["The transaction didn't go through", "Reset my login credentials please", "Money back, please"]
+print(model.predict(new))
+print(model.predict_proba(new, as_numpy=True).round(2))
+
+model.save_pretrained("output/my-setfit-model")        # reload later with SetFitModel.from_pretrained(...)
+```
+
+**Output (illustrative):**
+
+```text
+{'accuracy': 1.0}
+['payment', 'login', 'refund']
+[[0.88 0.07 0.05]
+ [0.06 0.89 0.05]
+ [0.05 0.06 0.89]]
+```
+
+A six-question exam is only for the demo. A real exam needs far more, ideally 30–50 per category, **even though training uses only 8**. Score it like any classifier: macro-F1 on the locked exam (Section 7.2).
+
+The `labels=` argument just tells SetFit the names to hand back. Without it, `predict` returns the numbers 0, 1, 2.
+
+### The knobs
+
+| Knob | Plain-English meaning | Start with |
+| --- | --- | --- |
+| **Base model** | The sentence-transformer whose map gets reshaped | `all-MiniLM-L6-v2` (fast); a bigger one such as `paraphrase-mpnet-base-v2` or a `bge` model if you can wait |
+| `num_epochs` | Passes over the pairs in stage 1 | 1 |
+| `batch_size` | Pairs per training step | 16 |
+| `num_iterations` | Fixes the number of pairs at `num_iterations × N × 2`, overriding the “use every pair” default | Leave unset for tiny data; try 20 once you have hundreds of examples |
+| `sampling_strategy` | How pairs are drawn: `"oversampling"` (default), `"undersampling"`, `"unique"` | The default |
+| `labels=` | The category names that `predict` returns | Your own names |
+
+### Tips and traps
+
+- **Pick examples for variety, not volume.** Eight *different* ways of asking for a refund teach more than eight near-copies of the same sentence.
+- **Keep every label clean.** With 8 examples, one wrong label is 12% of the class, and contrastive training will faithfully learn the mistake.
+- **Ask “how few is enough?” with data, not hope.** Train with 4, 8, 16 and 32 examples per class, score each on the same locked exam, and stop when the curve flattens. It also tells you how many labels are worth buying. `sample_dataset(ds, label_column="label", num_samples=8)` draws a fixed number per class from a bigger labelled set.
+- **More than one label per text?** Use `SetFitModel.from_pretrained(..., multi_target_strategy="one-vs-rest")`.
+- **No examples at all?** `setfit.get_templated_dataset` can invent training sentences from label names (“This sentence is about billing”), but zero-shot (Section 3.5) is simpler. Use SetFit once you have real examples.
+- **Long texts.** The body has a length limit (often 256 tokens for MiniLM-style models, see Section 1.6). Chunk long documents (Section 5.3).
+- **Outgrowing it.** With hundreds of examples per category, a normal fine-tune (Section 6.2) often catches up. Compare both on your exam.
+
+### Which classification tool for which situation?
+
+| What you have | Reach for | Section |
+| --- | --- | --- |
+| No labelled examples, categories invented today | Zero-shot with an NLI model | Section 3.5 |
+| Tens of examples, labels change every week, no time to train | Embeddings + `LogisticRegression` | Section 3.4 (way B) |
+| **About 8–50 examples per category** | **SetFit** | **this section** |
+| Hundreds or more per category | Fine-tune BERT with a classification head | Section 6.2 |
+
 ## 3.6 NER: Named Entity Recognition (“highlighter pens”)
 
 **Analogy:** read a news article with coloured highlighters: yellow for **people**, blue for **companies**, green for **places**. NER does exactly that automatically: it marks **which words are which kind of thing**.
@@ -522,7 +699,225 @@ LOC   Mumbai     1.00
 
 The `B`/`I` split lets the model tell two neighbouring names apart.
 
-**POS tagging** (noun, verb, adjective…) and **chunking** use the very same “one tag per word” head; only the label list is different. NER is also what you fine-tune to find *your* entities: product names, order IDs, drug names (§6.3).
+**POS tagging** (noun, verb, adjective…) and **chunking** use the very same “one tag per word” head; only the label list is different. NER is also what you fine-tune to find *your* entities: product names, order IDs, drug names (Section 6.3). And if you want to find entity types you invent on the spot, with no training at all, see GLiNER in Section 3.6a.
+
+## 3.6a GLiNER: NER with labels you invent on the spot (“highlighters you can swap mid-page”)
+
+**The problem with classic NER.** The NER model in Section 3.6 learned a **fixed menu** of labels during training: `PER`, `ORG`, `LOC`. Want to find `DRUG` or `FLIGHT_NUMBER` as well? You need labelled examples and a new training run (Section 6.3). An LLM could do it from a prompt, but it is slow and costly when you have a million documents.
+
+**GLiNER** (**G**eneralist and **Li**ghtweight model for **NER**, published in 2023) removes the fixed menu. **You hand it the label names at the moment you ask**, as plain words, and it highlights whatever matches them. No training, no new labelled data.
+
+### The idea: a sticky note at the top of the page
+
+**Analogy:** in Section 3.6 the highlighter worker was trained with exactly three colours. If you want a fourth colour, they must go back to school. GLiNER’s worker is different: before each page you stick a **note on top** saying “Today, highlight: *person, medicine, flight number*.” They read the note, then read the page. Change the note and the behaviour changes, with no school in between.
+
+### The concept, in three ideas
+
+1. **Labels are input, not output.** Classic NER ends in a fixed list of tag slots. GLiNER puts the label names *into the text it reads*, next to the passage, so the same model can serve any label list.
+2. **Match phrases to labels on the meaning map.** This is the “GPS coordinates” idea from Section 1.3 again. GLiNER gives every **candidate span** (a run of up to 12 words) a pin, and every label name a pin on the same map. A span is an entity of type *X* when its pin lands close to the pin for *X*.
+3. **Train on a huge variety of labels.** GLiNER was trained on tens of thousands of passages whose entities were labelled by an LLM, covering *thousands* of different entity types. It did not memorise particular labels. It learned **what it means to match a label name**, which is why labels it has never seen still work.
+
+Under the hood it is a **bidirectional encoder**, the same family as BERT (the original release used a DeBERTa backbone), which is why it belongs in this guide. It is small (tens to hundreds of millions of parameters) and runs on a CPU. It scores all spans and all labels in **one pass**, instead of writing an answer word by word like an LLM.
+
+```text
+  What the encoder reads (labels first, then the text):
+
+  [ENT] person [ENT] company [ENT] city [SEP]  Tim Cook said Apple will open a store in Mumbai
+        └─ label cards ─────────────────┘      └─ the passage ─────────────────────────────┘
+                                                              │
+                      build one vector for every span of up to 12 words
+                      "Tim"  "Tim Cook"  "Tim Cook said"  …  "Apple"  …  "Mumbai"
+                                                              │
+                   score(span, label) = sigmoid( span vector · label vector )
+                                                              │
+                          keep the pairs scoring above the threshold (0.5 by default)
+```
+
+**Try the idea in a few lines.** First, how many spans does the model have to judge? Then the matching step, using made-up 2-D vectors so you can see the arithmetic:
+
+```python
+import numpy as np
+
+words = "Tim Cook said Apple will open a store in Mumbai".split()
+W = 3                                              # real GLiNER uses a maximum span width of 12
+
+spans = [(i, j) for i in range(len(words)) for j in range(i, min(i + W, len(words)))]
+print(f"{len(words)} words, max width {W} -> {len(spans)} candidate spans")
+
+labels = {"person": np.array([1.0, 0.0]), "company": np.array([0.0, 1.0])}
+span_vecs = {"Tim Cook": np.array([2.5, -0.5]),    # pretend the encoder produced these
+             "Apple": np.array([-0.3, 2.2]),
+             "will open": np.array([-1.0, -1.0])}
+
+sigmoid = lambda x: 1 / (1 + np.exp(-x))
+print(f"\n{'span':<11}" + "".join(f"{l:>9}" for l in labels) + "   decision (threshold 0.5)")
+for s, v in span_vecs.items():
+    scores = {l: sigmoid(v @ lv) for l, lv in labels.items()}
+    hits = [l for l, p in scores.items() if p >= 0.5]
+    print(f"{s:<11}" + "".join(f"{p:9.2f}" for p in scores.values()) + f"   {hits[0] if hits else '-'}")
+```
+
+**Output (executed; the vectors are made-up toy numbers):**
+
+```text
+10 words, max width 3 -> 27 candidate spans
+
+span          person  company   decision (threshold 0.5)
+Tim Cook        0.92     0.38   person
+Apple           0.43     0.90   company
+will open       0.27     0.27   -
+```
+
+Read it like a matching game: “Tim Cook” is close to the *person* card (0.92), “Apple” is close to the *company* card (0.90), and “will open” matches neither, so it stays un-highlighted. With a real 300-word text and a width of 12 there are about 3,500 candidate spans, and the model scores all of them against all your labels at once.
+
+### Your first GLiNER program
+
+```python
+from gliner import GLiNER
+
+model = GLiNER.from_pretrained("urchade/gliner_medium-v2.1")        # small / medium / large / multi (many languages) exist
+
+text   = "Tim Cook said Apple will open a store in Mumbai on 5 March 2027."
+labels = ["person", "company", "city", "date"]
+
+for e in model.predict_entities(text, labels, threshold=0.5):
+    print(f"{e['label']:<8} {e['text']:<14} {e['score']:.2f}   chars {e['start']}-{e['end']}")
+```
+
+**Output (illustrative):**
+
+```text
+person   Tim Cook       0.98   chars 0-8
+company  Apple          0.97   chars 14-19
+city     Mumbai         0.96   chars 41-47
+date     5 March 2027   0.91   chars 51-63
+```
+
+Each result is a small dictionary with `text`, `label`, `score`, and the character positions `start` and `end`. These are ordinary Python slice positions: `text[e["start"]:e["end"]]` gives back `e["text"]`.
+
+**Now the headline trick: same model, brand-new labels, zero training.**
+
+```python
+text   = "Take 500 mg of paracetamol twice a day for fever."
+labels = ["drug", "dosage", "frequency", "symptom"]
+for e in model.predict_entities(text, labels, threshold=0.4):
+    print(f"{e['label']:<10} {e['text']:<13} {e['score']:.2f}")
+```
+
+**Output (illustrative):**
+
+```text
+drug       paracetamol   0.95
+dosage     500 mg        0.93
+frequency  twice a day   0.88
+symptom    fever         0.90
+```
+
+To process many texts at once, use `model.batch_predict_entities(list_of_texts, labels, threshold=0.5)`.
+
+### Getting the best out of it
+
+| Knob | What it does | Advice |
+| --- | --- | --- |
+| `threshold` | Minimum score to keep a span (default 0.5) | The metal-detector dial from Section 7.2: lower finds more treasure and more false beeps. Tune it on your exam, **per project**. |
+| Label wording | The label text *is* the instruction | Plain words work best: `person` rather than `PER`; `medicine name` or `flight number` rather than `MED` or `FLT`. Be specific. |
+| Number of labels | How many types you ask for at once | Start with the handful you truly need. A very long label list makes each decision harder. |
+| `flat_ner=True` (default) | No overlapping entities | Leave on unless you really need nested ones. |
+| `multi_label=True` | Allow one span to carry several labels | Off by default. |
+| Text length | The model reads about 384 tokens at once by default | **Chunk long documents** (Section 5.3). Entities cut at a chunk boundary can be missed, so overlap the chunks a little. |
+
+### From “no training” to “a model that is yours”
+
+GLiNER is a superb **starting point**, but on a narrow domain a model trained on your own data usually wins. A healthy pattern, the same “bootstrap with a big model” idea as Section 11.2:
+
+```text
+  1. Run GLiNER on 1,000–2,000 of your texts                 (minutes, no labels needed)
+  2. Convert its answers into BIO tags (Section 5.4)                  (below)
+  3. Have a person CORRECT them in an annotation tool          (much faster than labelling from scratch)
+  4. Fine-tune a cased BERT NER model on the corrected data    (Section 6.3)
+  5. Score on a locked, fully human-checked exam with seqeval  (Section 6.3, Part 7)
+```
+
+GLiNER’s character positions are exactly what the `spans_to_bio` function from Section 5.4 expects. Here it is turning GLiNER-shaped results into word-level tags (the entity dictionaries are written by hand in GLiNER’s output format, so you can run this without a model):
+
+```python
+import re
+
+def spans_to_bio(text, spans):                    # the same function as in Section 5.4
+    tokens, tags = [], []
+    for m in re.finditer(r"\w+|[^\w\s]", text):
+        tag = "O"
+        for s, e, label in spans:
+            if s <= m.start() < e:
+                tag = ("B-" if m.start() == s else "I-") + label
+                break
+        tokens.append(m.group()); tags.append(tag)
+    return tokens, tags
+
+text = "Tim Cook said Apple will open a store in Mumbai on 5 March 2027."
+found = [{"start": 0,  "end": 8,  "text": "Tim Cook",     "label": "person"},
+         {"start": 14, "end": 19, "text": "Apple",        "label": "company"},
+         {"start": 41, "end": 47, "text": "Mumbai",       "label": "city"},
+         {"start": 51, "end": 63, "text": "5 March 2027", "label": "date"}]
+
+spans = [(e["start"], e["end"], e["label"].upper()) for e in found]
+for tok, tag in zip(*spans_to_bio(text, spans)):
+    print(f"{tok:<7}{tag}")
+```
+
+**Output (executed):**
+
+```text
+Tim    B-PERSON
+Cook   I-PERSON
+said   O
+Apple  B-COMPANY
+will   O
+open   O
+a      O
+store  O
+in     O
+Mumbai B-CITY
+on     O
+5      B-DATE
+March  I-DATE
+2027   I-DATE
+.      O
+```
+
+You can also **fine-tune GLiNER itself** on your own data instead of switching to plain BERT. Its training examples use the same “highlight, then convert” idea, but with word positions instead of tags:
+
+```python
+{"tokenized_text": ["Tim", "Cook", "said", "Apple", "will", "open"],
+ "ner": [[0, 1, "person"], [3, 3, "company"]]}      # [first word, last word (inclusive), label]
+```
+
+The training loop lives in the GLiNER repository (see Section 11.8); follow its current instructions, because the project changes quickly.
+
+### Which NER tool for which situation?
+
+| | Regex / name list | Fine-tuned BERT NER (Section 6.3) | **GLiNER** | LLM with a prompt |
+| --- | --- | --- | --- | --- |
+| Add a new entity type | Write a pattern | Label data, retrain | **Change a label string** | Change the prompt |
+| Needs labelled data | No | Yes (50–500+ per type) | **No** (only for your exam) | No |
+| Speed per text | Instant | Milliseconds | Milliseconds to tens of ms | Seconds |
+| Cost at scale | None | Low | Low (runs on CPU) | Highest |
+| Accuracy on your narrow domain | Excellent for fixed formats | **Best once trained** | Good start, rarely the ceiling | Good, but can vary |
+| Same answer every time | Yes | Yes | Yes | Not always |
+
+**Rules of thumb:**
+
+- Strict formats (order IDs, emails, phone numbers): **a regex beats everything.** Do not spend a model on `ORD-48213`.
+- Unknown or changing entity types, or a first look at a new corpus: **GLiNER.**
+- Stable entity types and a lot of volume: **a fine-tuned model**, bootstrapped by GLiNER.
+
+### Honest limits
+
+- **It is a good generalist, not a specialist.** On narrow jargon, expect fine-tuned models to pull ahead. Measure with entity-level F1 per type (Section 6.3) on a locked exam, never by eyeballing a few examples.
+- **Scores can be confidently wrong** on brand-new names (Section 8.4), and results shift with the threshold and with how you word a label. Re-check both when your data changes.
+- **Language.** Pick a `multi` checkpoint for non-English text.
+- **Licences vary between checkpoints.** Read the model card before shipping commercially.
+- **Models keep changing.** The names above were current when this section was written. Check the model hub for newer GLiNER releases.
 
 ## 3.7 Extractive question answering (“highlight the answer”)
 
@@ -540,7 +935,7 @@ print(qa(question="When did Apollo 11 land on the Moon?", context=context))
 {'score': 0.97, 'start': 31, 'end': 44, 'answer': 'July 20, 1969'}
 ```
 
-**Limits:** the answer must literally appear in the text. This copies, it does not explain or combine information. For “write me a short answer in my own words”, see §3.11.
+**Limits:** the answer must literally appear in the text. This copies, it does not explain or combine information. For “write me a short answer in my own words”, see Section 3.11.
 
 ## 3.8 Topic modelling with BERTopic (“sorting a pile of photos”)
 
@@ -553,7 +948,7 @@ print(qa(question="When did Apollo 11 land on the Moon?", context=context))
                                                                        to each pile)
 ```
 
-Old-style topic models (LDA) just counted words. Because BERTopic starts from *meaning* vectors, “doctor” and “physician” land in the same pile.
+Old-style topic models (LDA) just counted words. Because BERTopic starts from *meaning* vectors, “doctor” and “physician” land in the same pile. Curious what UMAP, HDBSCAN and c-TF-IDF really do? Run the example below first, then read Section 3.8a.
 
 ```python
 from sklearn.datasets import fetch_20newsgroups
@@ -592,9 +987,347 @@ print(topic_model.transform(["NASA plans a new Mars mission"])[0])   # which pil
 - You can plug in your own (e.g. fine-tuned) embedding model: `BERTopic(embedding_model=model)`.
 - BERTopic can also track topics **over time**, which is a neat way to spot new themes appearing (see Part 8 on drift).
 
+## 3.8a BERTopic under the hood: UMAP, HDBSCAN and c-TF-IDF (“what happens inside the four boxes”)
+
+In Section 3.8 you ran BERTopic in a few lines and got topics. This section opens each of the four boxes, so that when the topics look wrong you know **which dial to turn**.
+
+Back to the shoebox of 10,000 unlabelled photos:
+
+| Step | Tool | The photo-pile job | The question it answers |
+| --- | --- | --- | --- |
+| 1. Embed | A sentence-BERT model | Give every photo GPS coordinates | “What does each text mean?” |
+| 2. Shrink | **UMAP** | Flatten a globe into a flat atlas | “Can I see the neighbourhoods without 384 directions?” |
+| 3. Group | **HDBSCAN** | Look down at a city at night: crowds of lights are piles, lone lights are strays | “Where are the crowds, and who is wandering alone?” |
+| 4. Name | **c-TF-IDF** | Glue each pile onto one scrapbook page and ask which words are special to it | “What is each pile about?” |
+
+```text
+  texts ─▶ EMBED ─▶ UMAP ─▶ HDBSCAN ─▶ c-TF-IDF ─▶ topics
+           (BERT)   (flat    (crowds     (name each
+                     atlas)   and strays)  pile)
+           384 numbers  5 numbers  topic id or -1  top words
+```
+
+> **The key idea:** steps 1–3 decide **who sits in which pile**. Step 4 only decides **what to call the pile**. The names never influence the grouping. That is why you can rename topics in seconds without re-clustering anything (shown below).
+
+### Step 1: Embed (the part you already know)
+
+Every text becomes a list of numbers that captures its meaning, exactly as in Section 1.3 and Section 3.1. By default BERTopic uses a small sentence-transformer (`all-MiniLM-L6-v2`, 384 numbers per text), and you can plug in any other embedding model, including one you fine-tuned (Section 6.5). **Everything after this step is only as good as these vectors**: if two themes land on top of each other here, no later step can pull them apart.
+
+### Step 2: UMAP (“flatten the globe”)
+
+**Why shrink at all?** Embeddings have hundreds of directions, and in that many directions something odd happens: **“near” and “far” blur together.** Every point ends up roughly the same distance from every other point, so there are no clear crowds left to find. Watch:
+
+```python
+import numpy as np, umap
+rng = np.random.default_rng(1)
+
+for dim in (2, 384):
+    pts = rng.normal(size=(500, dim))
+    d = np.linalg.norm(pts - pts[0], axis=1)[1:]          # distance from point 0 to all others
+    print(f"{dim:>3} dims: nearest {d.min():5.2f}  farthest {d.max():5.2f}  farthest/nearest = {d.max()/d.min():6.1f}")
+```
+
+**Output (executed):**
+
+```text
+  2 dims: nearest  0.12  farthest  4.81  farthest/nearest =   40.6
+384 dims: nearest 25.41  farthest 30.74  farthest/nearest =    1.2
+```
+
+On a flat 2-D map the farthest point is about 40 times farther than the nearest, so crowds stand out. In 384 dimensions it is only 1.2 times: everything is “about equally far.”
+
+**Analogy:** a **flat atlas of the globe**. You cannot flatten a sphere without some distortion, but a good map makes sure that **towns that are neighbours on the globe are still neighbours on the page.** UMAP (**U**niform **M**anifold **A**pproximation and **P**rojection) does that for your 384-number vectors.
+
+**How it works, in three plain steps:**
+
+1. For every text, find its closest few neighbours in the big space (how many: `n_neighbors`).
+2. Tie a **string** between each text and its neighbours: short strings (very close) are strong, long ones are weak. The result is a web of friendships.
+3. Scatter the points in the small space (say 5 numbers each), then nudge them until the web there looks as much like the web in the big space as possible: friends pull together, strangers drift apart.
+
+```python
+# (same script, continued) fake "document embeddings": 3 topics in 384 dimensions, with lots of noise
+D, per = 384, 200
+centres = rng.normal(size=(3, D))
+X = np.vstack([c + 2.2 * rng.normal(size=(per, D)) for c in centres])
+true = np.repeat([0, 1, 2], per)                           # the hidden truth, used only to check the result
+print("embeddings shape:", X.shape)
+
+reducer = umap.UMAP(n_neighbors=15, n_components=5, min_dist=0.0, metric="cosine", random_state=42)
+Z = reducer.fit_transform(X)
+print("after UMAP      :", Z.shape)
+```
+
+**Output (executed):**
+
+```text
+embeddings shape: (600, 384)
+after UMAP      : (600, 5)
+```
+
+These are BERTopic’s own default settings:
+
+| Setting (BERTopic default) | What it means | How to think about it |
+| --- | --- | --- |
+| `n_neighbors` (15) | How many neighbours each text looks at | **Small** = local detail, many small topics. **Large** = big picture, fewer and broader topics. |
+| `n_components` (5) | How many numbers per text after shrinking | Use 5 for *clustering*. For a *picture*, make a second, separate 2-D UMAP. |
+| `min_dist` (0.0) | How tightly points may pack | 0.0 packs crowds tightly, which makes them easier for HDBSCAN to see. |
+| `metric` (`"cosine"`) | How closeness is measured | Cosine, as in Section 3.1. |
+| `random_state` (none) | Repeatability | UMAP uses randomness, so topics can change from run to run. Set `random_state=42` for stable results (a little slower). |
+
+> **Don’t over-read a 2-D UMAP picture.** Tight blobs are meaningful. But the *distance between* blobs, and how big a blob looks, are not reliable. Use pictures to explore, not to prove.
+
+### Step 3: HDBSCAN (“find the crowds, leave the strays alone”)
+
+HDBSCAN stands for **H**ierarchical **D**ensity-**B**ased **S**patial **C**lustering of **A**pplications with **N**oise. Each word earns its place:
+
+- **Density-based:** a topic is a *crowd*, a spot where many points sit close together.
+- **Hierarchical:** it does not judge the crowd at one fixed setting. It watches what happens at *every* level of crowdedness.
+- **With noise:** points that never belong to a real crowd are **not forced into a pile**. They get the label **`-1`**. This is the “miscellaneous” topic from Section 3.8.
+
+**Analogy: a rising flood.** Picture the map as a landscape in which crowded spots are hills. Start with the sea at its lowest: all the land is one big continent (everything is one cluster). Now raise the water step by step. The continent splits into smaller islands, and little hills sink out of sight. HDBSCAN watches the **whole flood** and keeps the islands that **stayed above water the longest** and were **big enough to matter**. Whoever lives on a drowned hill or the flat coast is **noise**.
+
+**The same thing in four plain steps:**
+
+1. Measure how crowded each point’s surroundings are (the “high ground”).
+2. Join points into a family tree, closest and most crowded first, so you can see the crowds merge and split as the “water” rises.
+3. Throw away any island with fewer than `min_cluster_size` points. It is too small to be a topic.
+4. Of the islands that remain, keep the ones that stayed distinct the longest. Everyone else gets `-1`.
+
+**Why not just K-Means (Section 3.9)?**
+
+| | K-Means | HDBSCAN |
+| --- | --- | --- |
+| Must you say how many piles? | **Yes** | **No** (you say how small a pile may be) |
+| Strays | Forced into the nearest pile | Labelled `-1` |
+| Shape of a pile | Round blobs | Any shape |
+| Piles of different sizes and densities | Struggles | Copes |
+
+You can see the difference on three real piles plus 60 scattered strays:
+
+```python
+import numpy as np
+from sklearn.datasets import make_blobs
+from sklearn.cluster import KMeans
+import hdbscan
+
+rng = np.random.default_rng(0)
+X, _ = make_blobs(n_samples=[150, 150, 150], centers=[(-6, 0), (0, 6), (6, 0)], cluster_std=0.8, random_state=0)
+X = np.vstack([X, rng.uniform(-10, 10, size=(60, 2))])           # 60 strays scattered everywhere
+
+km = KMeans(n_clusters=3, n_init="auto", random_state=0).fit(X)
+print("KMeans pile sizes :", np.bincount(km.labels_))
+
+labels = hdbscan.HDBSCAN(min_cluster_size=30).fit_predict(X)
+print("HDBSCAN pile sizes:", [int(np.sum(labels == k)) for k in sorted(set(labels) - {-1})],
+      "| noise (-1):", int(np.sum(labels == -1)))
+```
+
+**Output (executed):**
+
+```text
+KMeans pile sizes : [167 174 169]
+HDBSCAN pile sizes: [159, 161, 155] | noise (-1): 35
+```
+
+K-Means had to be told “3”, and it pulled every stray into a pile: each pile grew to around 170 instead of 150. HDBSCAN found three piles on its own, kept them close to their true size, and **set 35 strays aside**.
+
+Now the payoff: HDBSCAN on the shrunken 5-number map from step 2.
+
+```python
+# (same script as UMAP, continued)
+labels = hdbscan.HDBSCAN(min_cluster_size=20).fit_predict(Z)
+for k in sorted(set(labels)):
+    name = "noise" if k == -1 else f"pile {k}"
+    print(f"{name:<7}: {np.sum(labels == k):>3}   true topics inside: {np.bincount(true[labels == k], minlength=3).tolist()}")
+```
+
+**Output (executed):**
+
+```text
+pile 0 : 200   true topics inside: [0, 0, 200]
+pile 1 : 200   true topics inside: [200, 0, 0]
+pile 2 : 200   true topics inside: [0, 200, 0]
+```
+
+Three piles, each containing exactly one of the hidden topics. Embeddings with a lot of noise were turned into clean piles by UMAP followed by HDBSCAN. (Real text is messier than this tidy fake, so expect some strays.)
+
+**The HDBSCAN dials:**
+
+| Setting (BERTopic default) | What it means | How to think about it |
+| --- | --- | --- |
+| `min_cluster_size` (10; in BERTopic it is called `min_topic_size`) | The smallest pile that counts as a topic | **Raise** it for fewer, bigger topics (and more noise). **Lower** it for more, smaller topics. |
+| `min_samples` (same as `min_cluster_size`) | How picky it is about what counts as “crowded” | **Raise** it and more points become noise. **Lower** it and fewer do. |
+| `cluster_selection_method` (`"eom"`) | Which islands to keep | `"eom"` keeps big, lasting islands. `"leaf"` keeps many small ones. |
+
+**What about the big `-1` pile?** A third or more of your documents in topic −1 is common and not a bug: those texts did not sit in any crowd. You can leave them, or hand each stray to its nearest topic, at the price of blurrier topics:
+
+```python
+new_topics = topic_model.reduce_outliers(docs, topics)       # give each stray to its nearest topic
+topic_model.update_topics(docs, topics=new_topics)           # recompute the names with the new members
+```
+
+### Step 4: c-TF-IDF (“which words are special to this pile?”)
+
+**First, ordinary TF-IDF**, which is just two ideas multiplied together:
+
+- **TF** (term frequency): how often a word appears *here*.
+- **IDF** (inverse document frequency): how *rare* the word is everywhere else.
+
+A word that is common here and rare elsewhere scores high. “The” appears everywhere, so it scores low. “Orbit” is a giveaway.
+
+**Analogy: dialect.** Everybody says “hello”, so “hello” tells you nothing about where a speaker comes from. But if someone keeps saying a word that only one region uses, you know exactly where they are from. TF-IDF hunts for each pile’s “regional words.”
+
+**The twist.** Ordinary TF-IDF scores words per *document*. But after step 3 BERTopic has *piles*, each containing many documents. So it **glues all the documents of a pile into one mega-document**, and then runs TF-IDF with each pile as the unit. That is the **c** in c-TF-IDF: **class-based**.
+
+```text
+  score(word, pile) = tf × idf
+
+     tf  = this word's share of all the words in the pile
+     idf = log( 1 + A / f )
+              f = how many times the word appears across ALL piles together
+              A = the average number of words per pile
+```
+
+Reading the formula: if a word appears all over the place, `f` is big, so `A / f` is small and the idf is small. If it appears in one pile only, `f` is small, so the idf is big. Here it is built from scratch on three tiny piles:
+
+```python
+import numpy as np
+from sklearn.feature_extraction.text import CountVectorizer
+
+topics = {
+    "space":  ["nasa launched a new rocket to orbit the moon",
+               "the rocket carried a satellite into orbit",
+               "astronauts will travel to the moon and mars"],
+    "sport":  ["the team won the game in the final season match",
+               "the coach said the team played a great game",
+               "fans watched the match and the team won"],
+    "health": ["the doctor told the patient to take the medicine",
+               "the patient visited the hospital for the treatment",
+               "the doctor said the medicine and the treatment helped"],
+}
+names = list(topics)
+mega = [" ".join(topics[n]) for n in names]                  # one mega-document per pile
+
+def ctfidf(stop_words=None):
+    cv = CountVectorizer(stop_words=stop_words)
+    counts = cv.fit_transform(mega).toarray().astype(float)  # rows = piles, columns = words
+    tf  = counts / counts.sum(axis=1, keepdims=True)         # share of THIS pile's words
+    f_t = counts.sum(axis=0)                                 # the word's count across ALL piles
+    A   = counts.sum(axis=1).mean()                          # average words per pile
+    idf = np.log(1 + A / f_t)
+    return np.array(cv.get_feature_names_out()), counts, tf * idf, idf
+
+vocab, counts, score, idf = ctfidf()
+vocab_s, _, score_s, _    = ctfidf(stop_words="english")
+
+print(f"{'pile':<8}{'1) plain counts':<34}{'2) c-TF-IDF':<34}3) c-TF-IDF + stop words")
+for i, n in enumerate(names):
+    a = ", ".join(vocab[np.argsort(-counts[i])[:4]])
+    b = ", ".join(vocab[np.argsort(-score[i])[:4]])
+    c = ", ".join(vocab_s[np.argsort(-score_s[i])[:4]])
+    print(f"{n:<8}{a:<34}{b:<34}{c}")
+```
+
+**Output (executed):**
+
+```text
+pile    1) plain counts                   2) c-TF-IDF                       3) c-TF-IDF + stop words
+space   the, orbit, moon, rocket          orbit, rocket, moon, to           moon, orbit, rocket, astronauts
+sport   the, team, game, match            team, the, game, match            team, game, won, match
+health  the, doctor, medicine, patient    the, doctor, medicine, patient    doctor, medicine, treatment, patient
+```
+
+**Reading the three columns:**
+
+1. **Plain counting** puts “the” first in every pile, which is useless.
+2. **c-TF-IDF** already demotes “the” in the space pile, because it appears everywhere (its idf is about 0.83, against about 2.59 for “rocket”). But in a tiny corpus “the” is so frequent *inside* a pile that it still sneaks into the other two.
+3. **c-TF-IDF plus stop-word removal** gives clean names. That is why real projects pass a `CountVectorizer(stop_words="english")`. It is also why the default output in Section 3.8 shows a topic named `-1_the_to_of_and`: BERTopic keeps stop words unless you tell it not to.
+
+**Rename without re-clustering.** Because step 4 never touches the grouping, you can change the naming recipe in seconds:
+
+```python
+from sklearn.feature_extraction.text import CountVectorizer
+
+topic_model.update_topics(docs, vectorizer_model=CountVectorizer(stop_words="english", ngram_range=(1, 2)))
+```
+
+`ngram_range=(1, 2)` lets two-word phrases such as “space station” count as single “words”. BERTopic can also polish the names afterwards with a *representation model* (for example, KeyBERT-style re-ranking, or an LLM that writes a short label for each topic). Think of c-TF-IDF as the first draft.
+
+### Putting it all together: the control panel
+
+You can hand BERTopic each of the four boxes yourself. The slow part is embedding, so **do it once and keep the result**. Re-tuning UMAP, HDBSCAN and the names afterwards takes only seconds to minutes.
+
+```python
+from bertopic import BERTopic
+from sentence_transformers import SentenceTransformer
+from umap import UMAP
+from hdbscan import HDBSCAN
+from sklearn.feature_extraction.text import CountVectorizer
+
+embedder   = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+embeddings = embedder.encode(docs, show_progress_bar=False)          # docs from Section 3.8; do this ONCE and save it
+
+topic_model = BERTopic(
+    embedding_model=embedder,                                          # box 1: embed
+    umap_model=UMAP(n_neighbors=15, n_components=5, min_dist=0.0,
+                    metric="cosine", random_state=42),                 # box 2: shrink
+    hdbscan_model=HDBSCAN(min_cluster_size=15, metric="euclidean",
+                          cluster_selection_method="eom",
+                          prediction_data=True),                       # box 3: group
+    vectorizer_model=CountVectorizer(stop_words="english",
+                                     ngram_range=(1, 2), min_df=2),    # box 4: name (c-TF-IDF is built on these counts)
+    verbose=False,
+)
+topics, probs = topic_model.fit_transform(docs, embeddings)            # reuse the saved embeddings
+
+print(topic_model.get_topic_info().head(5)[["Topic", "Count", "Name"]])
+print(topic_model.get_topic(1)[:5])                                    # top words with their c-TF-IDF scores
+print(topic_model.get_representative_docs(1)[0][:150])                 # READ a typical document from the pile
+```
+
+**Output (illustrative):**
+
+```text
+   Topic  Count                            Name
+0     -1    842      -1_people_think_like_know
+1      0    236    0_game_team_season_players
+2      1    190      1_space_nasa_launch_orbit
+3      2    161  2_god_jesus_bible_christian
+4      3    134          3_car_engine_bike_oil
+
+[('space', 0.031), ('nasa', 0.024), ('launch', 0.019), ('orbit', 0.018), ('shuttle', 0.016)]
+NASA has announced the launch window for the next shuttle mission, scheduled for ...
+```
+
+Compare it with Section 3.8: the “miscellaneous” topic is now named by real words (not “the to of and”) and the topic names are cleaner.
+
+**Look at your topics** (each returns an interactive chart):
+
+```python
+topic_model.visualize_topics()                           # a map of topics
+topic_model.visualize_barchart(top_n_topics=8)           # top words per topic
+topic_model.visualize_documents(docs, embeddings=embeddings)   # every document as a dot
+```
+
+### When the topics look wrong: which dial?
+
+| Symptom | Likely cause | Try |
+| --- | --- | --- |
+| Hundreds of tiny topics | `min_cluster_size` too small, or `n_neighbors` small | Raise `min_cluster_size` (30–50), or merge afterwards with `nr_topics=20` |
+| Only a few huge, vague topics | `min_cluster_size` too large, or `n_neighbors` large | Lower `min_cluster_size`; lower `n_neighbors` |
+| A third or more of the documents in topic −1 | HDBSCAN is strict, or the texts are very short and noisy | Lower `min_samples`; use `reduce_outliers`; try a better embedding model |
+| Names full of “the”, “and”, “to” | Stop words kept | `CountVectorizer(stop_words="english")`, then `update_topics` |
+| Different topics every run | UMAP randomness | `random_state=42` |
+| One topic mixes two themes | The embedding cannot tell them apart | A stronger or domain-adapted embedding model (Section 6.5) |
+| Names are vague | c-TF-IDF is a first draft | Add `ngram_range=(1, 2)`, or use a representation model |
+
+**How do you know the topics are good?** Part 7 has the scores (topic coherence), but nothing replaces *reading them*: print the top words and read three to five representative documents for each topic with `get_representative_docs`. If a human cannot name the pile, the pile is not ready.
+
+**Good to know.** Each document gets exactly **one** topic (or `-1`). The `probs` that BERTopic returns are only soft hints. If your documents each cover several themes, split them into paragraphs or sentences first (Section 5.3) before topic modelling.
+
 ## 3.9 Clustering, duplicates, keywords and extractive summaries
 
-These four small jobs all reuse the same sentence vectors from §3.1.
+These four small jobs all reuse the same sentence vectors from Section 3.1.
 
 **Clustering (“group the lookalikes”).** Like BERTopic but without the naming step.
 
@@ -661,9 +1394,9 @@ print([sentences[i] for i in sorted(top)])
 
 ## 3.10 Fill-in-the-blank and next-sentence prediction
 
-These are the two games BERT was originally trained on (§1.2).
+These are the two games BERT was originally trained on (Section 1.2).
 
-- **Fill-in-the-blank (`[MASK]`)**: see §1.8. Practical uses: checking what a model “thinks”, suggesting words in a controlled slot, and lightly re-training a model on your domain’s language.
+- **Fill-in-the-blank (`[MASK]`)**: see Section 1.8. Practical uses: checking what a model “thinks”, suggesting words in a controlled slot, and lightly re-training a model on your domain’s language.
 - **Next-sentence prediction**: “does sentence B follow sentence A?” Original BERT learned this; many later models (RoBERTa and others) dropped it because it helped little. You will rarely use it directly.
 
 ## 3.11 Text generation: the honest answer
@@ -678,7 +1411,7 @@ People often ask whether BERT can “generate text.” The short answer: **not o
 | Suggest the next word in a short slot | Somewhat | Possible but awkward; decoders do it better |
 | Write a free-flowing paragraph or answer | **No** | Not what the model learned |
 | Chat | **No** | Use a decoder model |
-| Summarise by *selecting* sentences | Yes | Extractive summary (§3.9) |
+| Summarise by *selecting* sentences | Yes | Extractive summary (Section 3.9) |
 | Summarise by *rewriting* | Only with extra work | See option 3 below |
 
 **What to do instead — four options, from most to least practical:**
@@ -747,6 +1480,9 @@ In the `transformers` library each job has its own “hat” class. You pick the
 | Multiple choice | `AutoModelForMultipleChoice` | n/a |
 | Next-sentence prediction | `BertForNextSentencePrediction` | n/a |
 | Encoder-decoder (generation attempt) | `EncoderDecoderModel` | n/a |
+| Few-shot classification | `SetFitModel` (from `setfit`) | n/a (you pass a `labels` list) |
+| Zero-shot NER with labels you choose | `GLiNER` (from `gliner`) | n/a (labels are passed at prediction time) |
+| Topic modelling | `BERTopic` (from `bertopic`) | n/a |
 
 ---
 
@@ -871,7 +1607,7 @@ Notice the last three: some jobs need *no labelled data at all*.
 | **Your logs** (what people searched, what they clicked) | High, in real user language | Low | People click the first result; remove personal data |
 | **Document structure** (FAQ question → answer, title → first paragraph) | Medium | Very low | Titles can be vague |
 | **An LLM writes the questions** (“synthetic” data) | Medium to high if checked | Low | Cleaner than real users; always sample-check |
-| **Public datasets** | Medium | Free | Different style; best used as “refresher” material (§8.6) |
+| **Public datasets** | Medium | Free | Different style; best used as “refresher” material (Section 8.6) |
 
 **Practical recipe:** a few hundred human-labelled examples for the **exam**, plus logs and synthetic data for **training**.
 
@@ -1115,6 +1851,8 @@ Rough rules of thumb; always check against your exam.
 | Classification | 20–50 per category | 200+ per category |
 | Reranker | \~5,000 questions with wrong answers added | 20,000+ |
 | NER | 50–100 examples of each entity type | 500+ of each type |
+| Few-shot classification (SetFit) | 8 per category | 16–64 per category (plus a bigger exam set) |
+| Zero-shot NER (GLiNER) | None to start | A few hundred human-checked texts as your exam, and to correct its pre-labels |
 | Topic modelling / clustering | 300+ texts, no labels | any amount |
 | SimCSE domain adaptation | \~10,000 sentences, no labels | 100,000+ |
 
@@ -1327,7 +2065,7 @@ Same, but need a huge batch on a small GPU     → CachedMultipleNegativesRankin
 (text_a, text_b, 0/1)  duplicate or not        → ContrastiveLoss
 (text_a, text_b, score 0-1)                    → CoSENTLoss
 (text, category)                               → BatchHardSoftMarginTripletLoss  (needs BatchSamplers.GROUP_BY_LABEL)
-only unlabelled domain text                    → SimCSE-style MNRL (§6.5)
+only unlabelled domain text                    → SimCSE-style MNRL (Section 6.5)
 need to shrink vectors later                   → wrap any of them in MatryoshkaLoss
 ```
 
@@ -1401,7 +2139,7 @@ def align(example):
 model = AutoModelForTokenClassification.from_pretrained(
     "bert-base-cased", num_labels=len(label_list),
     id2label=dict(enumerate(label_list)), label2id=label2id)
-# then train with Trainer + DataCollatorForTokenClassification(tok), exactly like §6.2
+# then train with Trainer + DataCollatorForTokenClassification(tok), exactly like Section 6.2
 ```
 
 Compute the score with **seqeval**, which counts an entity as correct only if **both the boundaries and the type are exactly right**:
@@ -1425,7 +2163,7 @@ Read it **per entity type**: an overall 0.93 can hide one weak type. **Do not us
 
 ## 6.4 Fine-tuning a reranker
 
-Reuse your search data. For every (question, correct passage), add tempting wrong passages (hard negatives, §6.1) labelled 0:
+Reuse your search data. For every (question, correct passage), add tempting wrong passages (hard negatives, Section 6.1) labelled 0:
 
 ```python
 import torch
@@ -1453,7 +2191,7 @@ CrossEncoderTrainer(model=reranker, args=args, train_dataset=train, loss=loss).t
 from datasets import Dataset
 sentences = ["The customer could not complete the card payment.", "The user forgot the account password."]  # thousands of these
 train_dataset = Dataset.from_dict({"sentence1": sentences, "sentence2": sentences})   # same text twice
-# then train with MultipleNegativesRankingLoss as in §6.1, batch size 128, 1 epoch
+# then train with MultipleNegativesRankingLoss as in Section 6.1, batch size 128, 1 epoch
 ```
 
 Be realistic: this teaches **vocabulary and style**, not what “correct” means for your business. It is a good first step before BERTopic or clustering on specialised text.
@@ -1485,6 +2223,8 @@ Some providers (for example Cohere for embeddings and rerank, Voyage AI for embe
 | Classification | `bert-base-uncased`, `roberta-base`, `deberta-v3` | Classification head | (text, label) |
 | Pair classification | same | Classification head | (A, B, label) |
 | NER | **cased** BERT / RoBERTa / DeBERTa / domain BERT | Token-tagging head | (words, tags) |
+| Few-shot classification | `all-MiniLM`, `paraphrase-mpnet` | Body on pairs, then a small head (SetFit) | 8–32 (text, label) per category |
+| Zero-shot NER | A GLiNER checkpoint | Nothing; optionally fine-tune GLiNER on span data | None to start; a human-checked exam |
 | Topic modelling | any embedding model | Usually nothing; maybe SimCSE first | Unlabelled texts |
 | Clustering | any embedding model | Usually nothing | Unlabelled texts |
 | QA | BERT / RoBERTa / DeBERTa | Span head | (question, paragraph, answer position) |
@@ -1582,10 +2322,10 @@ fine-tuned  Recall@10 = 0.901   NDCG@10 = 0.744
 | --- | --- | --- |
 | Training loss falls, exam score falls | Overfitting | Fewer epochs, lower learning rate, more varied data |
 | Exam score falls after adding hard negatives | False negatives | Larger `range_min`, margin filter, read 50 by hand |
-| Great exam score, poor real-world results | Leak between training and exam | Split by document (§5.6) |
-| Score drops after a model update in production | The search index was built by the old model | Re-index (§8.5) |
-| Domain score up, general ability down | Catastrophic forgetting | Lower rate; mix in general examples (§8.6) |
-| Swapped two columns, results worse, no error | Positional columns gotcha | Check column order (§5.7) |
+| Great exam score, poor real-world results | Leak between training and exam | Split by document (Section 5.6) |
+| Score drops after a model update in production | The search index was built by the old model | Re-index (Section 8.5) |
+| Domain score up, general ability down | Catastrophic forgetting | Lower rate; mix in general examples (Section 8.6) |
+| Swapped two columns, results worse, no error | Positional columns gotcha | Check column order (Section 5.7) |
 | NER: 90% “accuracy” but entities missed | Wrong metric | Entity-level F1 |
 
 ---
@@ -1626,7 +2366,7 @@ Both kinds of model in this guide are exposed:
 | **Pipeline drift** | An upstream step changed | New PDF parser; chunker switched from 120 to 400 words |
 | **Self-inflicted index drift** | You changed the model but not the stored vectors | Questions embedded by model v2, documents by model v1 |
 
-The last two are **the most common cause of real incidents**. Always rule them out first (§8.5).
+The last two are **the most common cause of real incidents**. Always rule them out first (Section 8.5).
 
 ## 8.3 Step 1: Know the two ways to spot model drift
 
@@ -1776,12 +2516,12 @@ mixed = concatenate_datasets([new,
                               general.shuffle(seed=1).select(range(min(len(general), n // 4)))]).shuffle(seed=42)
 
 model = SentenceTransformer("output/my-search-model/final")      # start from the CURRENT model
-# train 1 epoch with learning_rate=1e-5 (gentler than the original 2e-5), as in §6.1
+# train 1 epoch with learning_rate=1e-5 (gentler than the original 2e-5), as in Section 6.1
 ```
 
-**Light alternative:** train a small LoRA “sticky-note” adapter (§6.6) on the fresh data and swap it in. The base model never changes, so forgetting is far less of a risk and rollback is just swapping a file.
+**Light alternative:** train a small LoRA “sticky-note” adapter (Section 6.6) on the fresh data and swap it in. The base model never changes, so forgetting is far less of a risk and rollback is just swapping a file.
 
-After any model change, **re-embed and re-index** (§8.5), then update your saved “before” photograph.
+After any model change, **re-embed and re-index** (Section 8.5), then update your saved “before” photograph.
 
 ## 8.7 Step 5: Track drift over time with MLflow
 
@@ -2105,11 +2845,595 @@ Start with a nightly script that does steps 1–2 (detect and log) and sends you
 
 **Privacy:** logs contain people’s words. Remove personal data, restrict access, and prefer storing vectors and statistics over raw text.
 
+
+
+# PART 9 - How to choose an embedding model for retrieval
+
+## How to Choose an Embedding Model — A Beginner's Guide (Interview Edition)
+
+
+
 ---
 
-# PART 9 — Choosing, Pitfalls and Reference
 
-## 9.1 Which BERT job do I need?
+
+> **Interview habit to build:** when you quote a benchmark number, say the *date and the benchmark version*. "Model X led MTEB (English, v2) as of late 2025" is a strong answer. "Model X is the best" is a weak one.
+
+---
+
+## PART 1 — The Absolute Basics
+
+## 1.1 What is an embedding?
+
+An embedding is a list of numbers that represents the *meaning* of a piece of text.
+
+```text
+"How do I reset my password?"   →   [0.021, -0.114, 0.307, ... ]   (768 numbers)
+"I forgot my login credentials" →   [0.019, -0.109, 0.298, ... ]   (768 numbers)
+"The stock market fell today"   →   [-0.402, 0.551, -0.088, ... ]  (768 numbers)
+```
+
+The first two lists are close to each other. The third is far away. That "closeness" is the entire trick behind semantic search: instead of matching words, you match positions in a high-dimensional space.
+
+The number of values in the list (768 above) is the **dimensionality**. Common values are 384, 768, 1024, 1536, 3072.
+
+## 1.2 How do we measure "close"?
+
+The standard measure is **cosine similarity** — the cosine of the angle between two vectors.
+
+$$
+\cos(A,B) = \frac{A \cdot B}{\|A\| \, \|B\|}
+$$
+
+It ranges from **-1** (opposite meaning direction) to **+1** (identical direction), with 0 meaning unrelated.
+
+### Worked example (do this by hand once)
+
+Let's use 2 dimensions so you can actually see it. Suppose after embedding:
+
+```text
+query  q  = [0.6, 0.8]      ("password reset help")
+doc    d1 = [0.8, 0.6]      ("Go to Settings > Security > Reset Password")
+doc    d2 = [-0.6, 0.8]     ("Manage your email notification preferences")
+```
+
+All three are already **unit length** (length = 1), because:
+
+```text
+||q||  = sqrt(0.6² + 0.8²) = sqrt(0.36 + 0.64) = sqrt(1.0) = 1
+```
+
+When vectors are unit length, the denominator is 1×1 = 1, so cosine similarity is just the **dot product**:
+
+```text
+cos(q, d1) = (0.6 × 0.8) + (0.8 × 0.6) = 0.48 + 0.48 = 0.96   ← very similar
+cos(q, d2) = (0.6 × -0.6) + (0.8 × 0.8) = -0.36 + 0.64 = 0.28 ← not very similar
+```
+
+So the retriever returns `d1` first. That's the whole mechanism.
+
+> **This is why almost everyone L2-normalises embeddings before storing them.** Once every vector has length 1, the expensive cosine formula collapses into a cheap dot product, and the ranking is identical. Expect this as an interview question.
+
+## 1.3 What is MTEB?
+
+**MTEB** = Massive Text Embedding Benchmark, released by Hugging Face in 2022. It was genuinely important: before MTEB, every paper evaluated on its own datasets, so no two results were comparable.
+
+Two versions you must not confuse:
+
+| Benchmark | Scope | Task types |
+|---|---|---|
+| **MTEB (2022, original paper)** | 56 datasets, 112 languages | 8: classification, clustering, pair classification, reranking, retrieval, STS, summarization, bitext mining |
+| **MTEB (English, v2)** | 41 tasks, English only | 7 (bitext mining dropped — it's a cross-language task) |
+| **MTEB (Multilingual, v2) / MMTEB** | 250+ languages | 8 |
+
+The leaderboard reports a headline **"Mean (Task)"** average across all tasks, and a **"Mean (Task Type)"** that averages within each category first. The headline number is what most teams sort by. That is the problem this whole document is about.
+
+---
+
+## PART 2 — Why the Leaderboard Is Not Your Answer
+
+## 2.0 The trap, stated plainly
+
+The MTEB average mixes retrieval, clustering, classification, summarization and STS into one number. But a RAG pipeline only uses **retrieval**. A model that is #1 on the average can be #7 on the retrieval sub-task — and retrieval is the only column you care about.
+
+Sorting by the average is like hiring a developer based on their overall GPA when the job is entirely backend Python.
+
+**First correction to your habits:** on the leaderboard, sort by the **Retrieval** column, not Average.
+
+---
+
+## 2.1 Dimension 1 — Benchmark contamination and data leakage
+
+MTEB's datasets are public and on the internet. Models trained after those datasets were published may have seen them during pre-training or instruction tuning. The leaderboard does not flag this.
+
+If a model has memorised MS MARCO, a high MS MARCO score tells you nothing about how it will behave on your private support tickets.
+
+Research on this: work on **PTEB** and related "moving benchmark" efforts argues that static benchmarks saturate over time from a combination of contamination and models being tuned specifically toward the benchmark distribution.
+
+### Scenario
+
+> Your team picks the #1 model on MTEB retrieval (score 72 on MS MARCO). On your internal insurance-claims corpus, Recall@10 is 0.61. A model ranked #9 on MTEB gets 0.78 on the same set.
+
+That is not a bug. That is exactly what contamination plus domain mismatch looks like. **Trust your eval, not the leaderboard.**
+
+### How to spot it cheaply
+
+- Check the model's release date against the dataset's publication date.
+- Check whether the model card lists MTEB datasets in its training mix (many do, honestly).
+- Prefer benchmarks like **NanoBEIR** or your own held-out set for the final decision.
+
+---
+
+## 2.2 Dimension 2 — Task mismatch (not the same as contamination)
+
+A model can be genuinely excellent at a task MTEB does not weight heavily. The ICLERB benchmark (2024) found that models which rank mid-table on MTEB — Salesforce's SFR-Embedding-2_R among them — performed strongly on **in-context-learning example retrieval**, a task with different requirements from passage retrieval.
+
+The lesson is not "the leaderboard lies." It's: **the leaderboard measures a weighted mixture of tasks, and your task has weight 1.0 on itself.**
+
+---
+
+## 2.3 Dimension 3 — Domain mismatch
+
+MTEB's retrieval suite is mostly general web text: MS MARCO, TREC, NFCorpus, Wikipedia, news.
+
+If your corpus is legal contracts, radiology reports, semiconductor datasheets, or your company's internal Confluence, MTEB retrieval scores are a *directional hint*, nothing more.
+
+### The evidence
+
+The **Massive Legal Embedding Benchmark (MLEB)**, published October 2025, is a 10-dataset, expert-annotated legal retrieval benchmark scored with NDCG@10. On it, a legal-domain-adapted model (Isaacus **Kanon 2 Embedder**) ranked first out of ~21 models, ahead of general-purpose leaders including OpenAI text-embedding-3-large, Gemini Embedding, Voyage 3 Large, Qwen3-Embedding-8B and Jina Embeddings v4. Notably, it stayed at #1 even when truncated from 1,792 dimensions down to 768.
+
+### Scenario
+
+> **Interviewer:** "We're building search over 2 million medical insurance claim documents. Which embedding model?"
+>
+> **Weak answer:** "Whatever is #1 on MTEB right now."
+>
+> **Strong answer:** "MTEB retrieval gives me a shortlist of 5–10 competent general models, but medical claims are a specialised domain with heavy abbreviation use and codes like ICD-10, so I'd expect leaderboard order not to hold. I'd build a 200-query evaluation set from real search logs with graded relevance, measure Recall@20 and NDCG@10, and also include a domain-adapted or fine-tuned candidate. I'd add BM25 as a baseline, because codes like 'ICD-10 J45.909' are exactly what lexical search is best at and dense retrieval is worst at."
+
+That last sentence — knowing when embeddings are the *wrong* tool — is usually what separates a hire from a no-hire.
+
+---
+
+## 2.4 Dimension 4 — Sequence length cliffs
+
+Many MTEB retrieval datasets use short passages (under 256 tokens). So a model whose quality degrades past 512 tokens can still score well.
+
+Two distinct failure modes to keep separate:
+
+1. **Hard truncation.** The model's max sequence length is 512. Your chunk is 900 tokens. Tokens 513–900 are silently discarded. You will not get an error.
+2. **Soft degradation.** The model *accepts* 8K tokens but was mostly trained on short text, so the embedding of a long document becomes a mushy average that matches nothing specific.
+
+### The counter-intuitive part
+
+A huge context window is often the *wrong* solution. A 32K-token embedding produces one vector for 32K tokens of text — one point in space representing dozens of topics. Retrieval gets *worse*, not better.
+
+```text
+Better:  long document → 20 focused chunks → 20 focused vectors
+Worse:   long document → 1 vector that means "generally about insurance, sort of"
+```
+
+Long context matters most when a single semantic unit is genuinely long (a full contract clause, a complete function with its docstring).
+
+| Model | Context window |
+|---|---|
+| Most BERT-based models (BGE, E5, MiniLM, GTE-base) | 512 tokens |
+| OpenAI text-embedding-3-small / -large | 8,191 tokens |
+| Kanon 2 Embedder | 16,384 tokens |
+| Qwen3-Embedding, Jina Embeddings v4 | 32,768 tokens |
+
+> **Practical check before you commit:** tokenize your corpus and plot the chunk-length distribution. If the 95th percentile is 380 tokens, a 512-token model is fine and you just saved a lot of money.
+
+---
+
+## 2.5 Dimension 5 — Cost, and where it actually goes
+
+MTEB ranks quality. It says nothing about cost. But the cost story is more subtle than "pick the cheap one."
+
+### API pricing (verify before quoting — this changes)
+
+| Model | Price per 1M tokens | Batch API |
+|---|---|---|
+| OpenAI text-embedding-3-small | $0.02 | $0.01 |
+| OpenAI text-embedding-3-large | $0.13 | $0.065 |
+
+The large model is **6.5×** the price of the small one (0.13 ÷ 0.02 = 6.5).
+
+### Worked example: what does that actually cost you?
+
+Corpus: 2,000,000 chunks averaging 400 tokens = **800M tokens**.
+
+```text
+Initial index build
+  3-small:  800M × $0.02/1M = $16
+  3-large:  800M × $0.13/1M = $104
+
+Query traffic: 100,000 queries/day × 20 tokens = 2M tokens/day = 60M/month
+  3-small:  60M × $0.02/1M = $1.20 / month
+  3-large:  60M × $0.13/1M = $7.80 / month
+```
+
+**The counter-intuitive conclusion:** for most teams, the embedding API bill is trivial. A $104 one-time cost is not a reason to accept worse retrieval.
+
+So what *does* cost money?
+
+```text
+Vector storage + RAM:  2M chunks × 3072 dims × 4 bytes = 24.6 GB of RAM
+Same corpus at 768 dims:                                  6.1 GB of RAM
+LLM generation tokens:  usually 10-100× the embedding cost
+Re-embedding on model change: the full $104 again, plus a migration
+```
+
+### The self-hosting break-even
+
+Your draft claimed self-hosting is "1/20th the cost." That is only true at high sustained utilisation. Do the arithmetic:
+
+```text
+A100 40GB on a cloud provider:  ~$1.50-2.00/hour  → ~$1,100-1,460/month if always on
+
+At $0.02/1M tokens (3-small), $1,200/month buys you 60 BILLION tokens.
+At $0.13/1M tokens (3-large), $1,200/month buys you 9.2 billion tokens.
+```
+
+**Break-even:** self-hosting beats the small API only above roughly tens of billions of tokens per month. Below that, the GPU sits idle and you have paid for an ops burden you did not need.
+
+Self-hosting wins for reasons that are usually *not* cost: data residency, no third-party data sharing, no rate limits, ability to fine-tune the weights, and no vendor deprecating your model.
+
+---
+
+## 2.6 Dimension 6 — Quantization and compression (the hidden lever)
+
+Most people deploy at full FP32 because that's what the leaderboard used. This leaves large savings unclaimed. There are **two different things** called quantization here, and interviews love to see whether you can separate them.
+
+### (a) Model quantization — the precision of the model's *weights*
+
+This affects inference speed and GPU memory of the encoder itself.
+
+- On CPU, INT8 typically runs **~2–4× faster** than FP32 with small quality loss.
+- On GPU, **FP16 or BF16** is the normal sweet spot.
+
+(The full math of how this works is in document 04 of this set.)
+
+### (b) Vector precision — the precision of the *output embeddings you store*
+
+This affects your vector database size and search latency.
+
+| Precision | Bits/dim | Storage vs FP32 | Typical quality impact |
+|---|---|---|---|
+| Float32 | 32 | 1× (baseline) | — |
+| Float16 / BFloat16 | 16 | 2× smaller | usually under ~1%; measure it |
+| Int8 | 8 | 4× smaller | small, recoverable with rescoring |
+| Binary (1 bit) | 1 | 32× smaller | large, but recoverable with reranking |
+
+### Binary quantization, worked by hand
+
+Take an 8-dimensional vector and keep only the sign of each value:
+
+```text
+v      = [ 0.42, -0.13,  0.77, -0.95,  0.08, -0.31,  0.60, -0.02]
+sign   = [   1,     0,     1,     0,     1,     0,     1,     0  ]
+packed = 0b10101010 = one single byte
+```
+
+Storage: 8 dims × 4 bytes = **32 bytes** → **1 byte**. Exactly 32×.
+
+And comparison becomes a **Hamming distance** — an XOR plus a popcount, which is a single CPU instruction. This is why binary search is not just smaller but dramatically faster.
+
+You lose magnitude information, so relevance drops. The fix is the two-stage pattern in Section 2.8.
+
+### Matryoshka models — embeddings you can cut in half
+
+Matryoshka Representation Learning trains a model so that the *first* N dimensions of its output are still a usable embedding on their own. You can chop off the tail.
+
+- OpenAI's `text-embedding-3-*` support a `dimensions` parameter (3-large: 3072 → 1024 or 256).
+- Gemini Embedding supports 768 / 1536 / 3072.
+- Qwen3-Embedding truncates down to 32.
+- Kanon 2 Embedder: 1,792 / 1,024 / 768 / 512 / 256.
+
+Storage math for 1M chunks:
+
+```text
+3072 dims × 4 bytes × 1M = 12.29 GB
+ 768 dims × 4 bytes × 1M =  3.07 GB    ← 25% of the cost (768/3072 = 0.25)
+ 768 dims × 1 byte  × 1M =  0.77 GB    ← truncation + int8 together
+```
+
+> **Nuance for the interview:** storage scales exactly linearly with dimensions, so 25% is exact. *Latency* is only roughly linear — ANN index structure, cache behaviour and SIMD width all interfere. Say "storage drops to exactly 25%, latency improves substantially but I'd measure it" rather than claiming both.
+
+---
+
+## 2.7 Dimension 7 — Multilingual blind spots
+
+MTEB (English, v2) is 41 English tasks. MMTEB / MTEB (Multilingual, v2) covers **250+ languages**. Most teams only look at the English board.
+
+If you serve Hindi, Telugu, Arabic or Indonesian users, the English #1 may be a poor choice — and "it uses a multilingual tokenizer" is not the same as "it was trained to align meanings across languages."
+
+Things to check for a multilingual deployment:
+
+- Is it trained for **cross-lingual retrieval** (Hindi query finds English document) or only **multilingual** (Hindi query finds Hindi document)? These are different capabilities.
+- What is the tokenizer's fertility on your language? Indic and CJK scripts often consume 2–4× more tokens per word, which affects both cost and effective context length.
+- Is your specific language actually in the training mix, or just technically representable?
+
+As of late 2025 / early 2026, NVIDIA's `llama-embed-nemotron-8b` and Qwen3-Embedding-8B were among the strongest open multilingual options, and Cohere Embed v4 among the strongest commercial ones — but check the current board rather than trusting this sentence.
+
+---
+
+## 2.8 Binary vectors and multi-stage ranking
+
+Here is the architecture that makes aggressive compression safe.
+
+```text
+Stage 1 — RETRIEVE WIDE, CHEAP
+  Binary or int8 vectors over the whole corpus
+  Return top 500-1000 candidates
+  (fast, tiny memory, imperfect)
+          ↓
+Stage 2 — RESCORE
+  Re-score those 500 candidates with full-precision vectors
+  Return top 50
+  (you only stored 500 full vectors' worth of work)
+          ↓
+Stage 3 — RERANK PRECISELY
+  Cross-encoder reads (query, passage) together
+  Return top 5-10
+  (very accurate, only runs on 50 pairs)
+          ↓
+      LLM generation
+```
+
+Binary retrieval alone recovers roughly 80–90% of full-precision relevance on many workloads. The rescore and rerank stages recover the rest. Net result: 32× less memory with near-baseline quality.
+
+> **The bigger point:** obsessing over 0.3 MTEB points between two embedding models is meaningless when adding a reranker moves NDCG@10 by 5–15 points. Architecture beats model selection.
+
+---
+
+## 2.9 Fine-tuning: the most underrated lever
+
+> Fine-tuning an embedding model is far easier than fine-tuning an LLM, and it often has a bigger impact on retrieval quality than swapping models.
+
+Why it's easy:
+
+- Embedding models are small (33M–8B params; most useful ones are 100–350M).
+- The training objective (contrastive learning) is simple and stable.
+- You need thousands of examples, not millions.
+- A fine-tune on ~6,000 pairs of a 110M-parameter model runs in single-digit minutes on a consumer GPU and costs a few cents of compute. (Your draft said "under 4 minutes and less than $0.10" — plausible for that size, but it depends entirely on model size, sequence length and hardware, so don't quote it as a rule.)
+
+Full treatment is in document 02 of this set.
+
+---
+
+## PART 3 — The Decision Framework
+
+Your draft called this "five steps" in prose and drew seven in the flowchart, with mismatched numbering. Here is one consistent seven-step version.
+
+```mermaid
+flowchart TD
+    Start(["START: need an embedding model"])
+    S1["STEP 1 — Identify the primary task"]
+    T{"Task type?"}
+    R["Use the MTEB Retrieval column"]
+    C["Use the MTEB Classification column"]
+    K["Use MTEB Clustering / STS columns"]
+    S2["STEP 2 — Check your data domain"]
+    D{"Domain?"}
+    G["General web text:<br/>MTEB is a reasonable shortlist"]
+    SP["Specialised domain:<br/>MTEB may mislead.<br/>Build a domain eval."]
+    S3["STEP 3 — Apply hard constraints"]
+    HC["Language · context length · latency SLA<br/>Infra (CPU/GPU, API/self-host) · budget · licence · data residency"]
+    S4["STEP 4 — Shortlist 5-10 candidates"]
+    CB{"Can you build a<br/>domain eval set?"}
+    GOLD["Gold standard:<br/>sample real queries, annotate graded relevance,<br/>measure Recall@k and NDCG@k"]
+    FB["Fallback: use the relevant MTEB sub-task only.<br/>Deprioritise likely-contaminated models."]
+    S5["STEP 5 — Pick the winner on YOUR numbers"]
+    S6["STEP 6 — Production optimisation"]
+    Q["Quantize weights<br/>INT8 on CPU, FP16/BF16 on GPU"]
+    CP["Compress vectors<br/>int8 or binary + rescore"]
+    M["Matryoshka truncation<br/>768 dims = 25% of storage"]
+    FT["Fine-tune with sentence-transformers<br/>if off-the-shelf underperforms"]
+    S7["STEP 7 — Validate against SLAs"]
+    SLA{"Meets latency,<br/>cost and quality?"}
+    DEP["DEPLOY + monitor"]
+    LIVE(["LIVE"])
+    IT["Iterate: adjust model, compression,<br/>chunking or fine-tuning"]
+
+    Start --> S1 --> T
+    T -->|Retrieval / RAG| R
+    T -->|Classification| C
+    T -->|Clustering / STS| K
+    R --> S2
+    C --> S2
+    K --> S2
+    S2 --> D
+    D -->|General web text| G
+    D -->|Specialised| SP
+    G --> S3
+    SP --> S3
+    S3 --> HC --> S4 --> CB
+    CB -->|YES| GOLD
+    CB -->|NO| FB
+    GOLD --> S5
+    FB --> S5
+    S5 --> S6
+    S6 --> Q
+    S6 --> CP
+    S6 --> M
+    S6 --> FT
+    Q --> S7
+    CP --> S7
+    M --> S7
+    FT --> S7
+    S7 --> SLA
+    SLA -->|YES| DEP --> LIVE
+    SLA -->|NO| IT
+    IT -.-> S3
+```
+
+### Step 1 — Identify the primary task
+RAG and semantic search → **Retrieval** column. Topic tagging → **Classification**. Deduplication or theme discovery → **Clustering / STS**. Never sort by Average.
+
+### Step 2 — Check the domain
+General web text: MTEB order is a reasonable prior. Legal, medical, financial, scientific, code, or internal jargon: treat MTEB as a weak prior only.
+
+### Step 3 — Apply hard constraints (do this *before* quality comparisons)
+These eliminate candidates outright, so applying them first saves evaluation effort:
+
+- Context length needed for your chunks
+- Languages served, and whether you need cross-lingual retrieval
+- Latency SLA for a single query
+- Infrastructure: CPU-only? GPU available? API allowed?
+- Licence: is commercial use permitted? (Some strong models are non-commercial.)
+- Data residency and privacy: can text leave your network at all?
+- Budget ceiling for both indexing and storage
+
+### Step 4 — Shortlist 5–10
+Take the top 5–10 on the relevant sub-task among the survivors of Step 3. Do not agonise over sub-point differences; the ordering within that group is noise relative to your data.
+
+### Step 5 — Evaluate on YOUR data
+
+This is the step that actually decides. Minimum viable version:
+
+1. Collect 100–300 **real** queries (from search logs, support tickets, or a domain expert).
+2. For each query, have someone label the retrieved documents with graded relevance: `2 = directly answers`, `1 = related`, `0 = irrelevant`.
+3. Freeze that set. Never tune on it and then report on it.
+4. Measure **Recall@k** (did the right chunk make it into the candidate set at all?) and **NDCG@k** (is it ranked near the top?).
+5. Compare the ordering to the leaderboard ordering.
+
+> When leaderboard order and your eval order disagree, **trust your eval**. Contamination and domain shift are the default explanation.
+
+### Step 6 — Optimise for production
+Quantize weights (INT8 on CPU, FP16/BF16 on GPU). Truncate dimensions if the model is Matryoshka-trained. Reduce stored vector precision, adding a rescore stage if you go to binary. Measure end-to-end latency and cost after each change, not in theory.
+
+### Step 7 — Validate SLAs and deploy behind monitoring
+If any of latency, cost or quality fails, loop back to Step 3 — often it's a constraint you set too loosely, not a model problem.
+
+---
+
+## PART 4 — Interview Scenario Bank
+
+Each scenario below follows the same shape: the question, what's being tested, a strong answer, and the answer that fails.
+
+---
+
+### Scenario 1 — The leaderboard trap
+
+> "How do you pick an embedding model for our product search?"
+
+**Being tested:** whether you think in constraints or in rankings.
+
+**Strong:** "First I'd pin down the task — product search is retrieval, so I'd use the retrieval sub-task, not the MTEB average. Then hard constraints: product catalogues are short text, so a 512-token model is fine and cheap; if we serve multiple markets I need multilingual. That gives me a shortlist of maybe six. Then I'd build a 200-query eval from real search logs — product search is one of the rare cases where you *have* click data, so I can derive relevance labels cheaply. I'd also run BM25 as a baseline, because exact SKU and brand matching matters enormously in product search and dense retrieval is weak there. My guess is the final system is hybrid, not pure dense."
+
+**Fails:** "I'd use the top model on MTEB."
+
+---
+
+### Scenario 2 — Retrieval is bad and you don't know why
+
+> "Recall@10 is 0.55. The team wants to switch to a bigger embedding model. What do you do?"
+
+**Being tested:** whether you debug or whether you reach for the most expensive knob.
+
+**Strong:** "Switching models is the last thing I'd try, because it's the most expensive change and may not be the bottleneck. I'd first check whether the right chunk *exists* in the index at all — if the PDF parser flattened the table the answer lives in, no embedding model will save us. That's an upper bound on recall we can measure directly. Then chunking: if answers routinely span a chunk boundary, I'd change the chunking strategy. Then I'd check whether queries and documents used the correct prompt prefixes for this model — with E5, forgetting `query:` / `passage:` silently costs several points. Then I'd add BM25 and fuse. Only after that would I compare models, and I'd probably compare *fine-tuning the current one* against swapping, since fine-tuning usually wins on a specialised corpus."
+
+**Fails:** "Upgrade to the largest model available."
+
+---
+
+### Scenario 3 — Cost pressure
+
+> "Our vector database costs $4,000/month. Cut it without hurting quality."
+
+**Being tested:** whether you know the compression stack.
+
+**Strong:** "Storage cost is linear in `chunks × dimensions × bytes_per_dim`, so there are three independent levers. First, dimensions: if the model is Matryoshka-trained, truncating 3072 → 768 cuts storage to exactly 25% — I'd measure NDCG@10 at each truncation and take the largest cut with acceptable loss. Second, precision: int8 is another 4× on top of that with small loss. Third, chunk count: if we have heavy overlap or near-duplicate documents, deduplication may remove a chunk of the index for free. If I need more than that, binary vectors plus a full-precision rescore stage gets to 32× — the rescore stage is what keeps quality, so I'd never ship binary without it. I'd re-run the frozen eval set after each step and stop at the first one that costs real quality."
+
+**Fails:** "Use a smaller model."
+
+---
+
+### Scenario 4 — The specialised domain
+
+> "We're doing semantic search over Indian legal judgments, mostly English with Hindi and regional-language citations. What's your plan?"
+
+**Being tested:** domain awareness plus honesty about uncertainty.
+
+**Strong:** "Three things make this hard. One: legal is a domain where general models demonstrably underperform — MLEB showed a legal-adapted model beating OpenAI, Gemini and Voyage on legal retrieval, so I'd expect a specialised or fine-tuned model to matter here. Two: mixed-script content means I need a genuinely multilingual model, and I'd check whether it does cross-lingual retrieval or only same-language. Three: judgments are long and citation-heavy, so citation strings like 'AIR 1973 SC 1461' are exact-match objects — those belong in BM25, not dense retrieval, and I'd build a hybrid from day one. For evaluation I'd need a lawyer to label maybe 150 queries; without domain expert labels I'm guessing. And I'd consider fine-tuning on (question, relevant paragraph) pairs, since legal language is exactly the kind of specialised vocabulary where fine-tuning pays off most."
+
+**Fails:** naming a model without mentioning evaluation.
+
+---
+
+### Scenario 5 — The trick question
+
+> "Model A scores 68.2 on MTEB. Model B scores 68.5. Which do you pick?"
+
+**Being tested:** whether you understand measurement noise.
+
+**Strong:** "Neither, on that basis. A 0.3-point gap on an aggregate benchmark is well within noise from prompt formatting, evaluation seed and dataset overlap, and neither number is measured on my data. I'd pick on the constraints instead — context length, licence, latency, cost, whether it's self-hostable — and if both survive, I'd run both on my own eval set and pick the winner there. If they tie there too, I'd take the smaller and cheaper one."
+
+**Fails:** "Model B, it scores higher."
+
+---
+
+### Scenario 6 — Migration
+
+> "We want to swap our embedding model in production. What breaks?"
+
+**Being tested:** whether you understand that embedding spaces are not interchangeable.
+
+**Strong:** "Vectors from two different models live in unrelated coordinate systems — you cannot compare a BGE vector to an E5 vector, even if both are 768 dimensions. So a model swap means re-embedding the entire corpus and rebuilding the index; there is no incremental path. Operationally I'd build the new index alongside the old one, run both against a frozen eval set, shadow production traffic against the new index to compare results before cutting over, then switch with a feature flag so rollback is instant. I'd also store the embedding model name and version in the index metadata, so we can never accidentally mix generations. And I'd budget for the re-embedding cost and the double storage during the transition."
+
+**Fails:** "Just change the model name in the config."
+
+---
+
+### Scenario 7 — Latency
+
+> "P99 search latency is 800ms. Target is 200ms. Where do you look?"
+
+**Being tested:** whether you can decompose a latency budget.
+
+**Strong:** "First I'd break the 800ms down by stage: query embedding, ANN search, reranking, and network. They have completely different fixes. If query embedding dominates, the encoder is too big or it's running on CPU — a smaller model or a GPU/ONNX-quantized deployment fixes it. If ANN search dominates, it's index tuning: lower `ef_search` in HNSW or lower `nprobe` in IVF, trading recall for latency, or reduce dimensions. If reranking dominates, shrink the candidate set from 100 to 50, or use a smaller cross-encoder. I'd also check whether we're paying an avoidable network hop to a hosted embedding API on every query — caching embeddings for repeated queries often removes a surprising fraction of traffic. Without the breakdown I'd just be guessing."
+
+**Fails:** "Use a faster index."
+
+---
+
+## Cheat Sheet
+
+```text
+EMBEDDING       text → vector of numbers representing meaning
+COSINE SIM      angle between vectors; -1 to 1; = dot product if unit-normalised
+MTEB            2022 paper: 56 datasets / 8 task types / 112 languages
+MTEB (eng, v2)  41 tasks / 7 task types, English only
+MMTEB           250+ languages
+
+SORT BY         the sub-task you actually use (Retrieval for RAG), never Average
+
+SIX BLIND SPOTS OF THE LEADERBOARD
+  1. Contamination   model may have trained on the test set
+  2. Task mismatch   average ≠ your task
+  3. Domain          legal/medical/internal ≠ web text
+  4. Length          short benchmark passages hide truncation cliffs
+  5. Cost            index build is cheap; RAM and re-embedding are not
+  6. Language        English #1 says nothing about Hindi
+
+COMPRESSION LEVERS (independent, multiply together)
+  Dimensions   3072 → 768 = 25% storage (exact, if Matryoshka)
+  Precision    fp32 → int8 = 4×;  fp32 → binary = 32×
+  Weights      INT8 on CPU (~2-4× faster);  FP16/BF16 on GPU
+
+PRODUCTION PATTERN
+  retrieve wide (cheap/compressed) → rescore (full precision) → rerank (cross-encoder) → generate
+
+THE ONE-LINE ANSWER
+  "MTEB gives me a shortlist; my own frozen eval set on my own data picks the winner;
+   then I optimise with quantization, truncation and a reranker."
+```
+
+---
+
+# PART 11 — Choosing, Pitfalls and Reference
+
+## 11.1 Which BERT job do I need?
 
 | Your goal | Use | Start with | Part |
 | --- | --- | --- | --- |
@@ -2117,16 +3441,18 @@ Start with a nightly script that does steps 1–2 (detect and log) and sends you
 | “Put the best result first among 50 candidates” | Reranker (cross-encoder) | `ms-marco-MiniLM` | 3.3, 6.4 |
 | “Label each text from a fixed list” | Classification | embeddings + logistic regression; then fine-tune | 3.4, 6.2 |
 | “Label with categories I invented today” | Zero-shot | an NLI model | 3.5 |
+| “I have only 8–16 examples per category” | Few-shot classification | SetFit on `all-MiniLM-L6-v2` | 3.5a |
 | “Pull names, IDs, dates out of text” | NER | `dslim/bert-base-NER`; fine-tune cased BERT | 3.6, 6.3 |
+| “Pull entity types I invent today, with no training” | Zero-shot NER | GLiNER (for example `urchade/gliner_medium-v2.1`) | 3.6a |
 | “Highlight the answer inside this paragraph” | Extractive QA | SQuAD-tuned DistilBERT | 3.7 |
-| “What are the themes in my 10,000 documents?” | Topic modelling | BERTopic | 3.8 |
+| “What are the themes in my 10,000 documents?” | Topic modelling | BERTopic | 3.8, 3.8a |
 | “Group similar texts / find duplicates” | Clustering, community detection | any embedding model | 3.9 |
 | “Key phrases / pick key sentences” | KeyBERT / extractive summary | any embedding model | 3.9 |
 | “Do these two texts agree / duplicate?” | Pair classification | NLI or duplicate cross-encoder | 3.4 |
 | “Write me an answer or paragraph” | **A decoder LLM**, with BERT retrieval (RAG) | Claude, GPT, Llama | 3.11 |
-| “Is my data changing?” | Drift monitoring on embeddings | the code in §8.4 | 8 |
+| “Is my data changing?” | Drift monitoring on embeddings | the code in Section 8.4 | 8 |
 
-## 9.2 BERT-family model or a big language model?
+## 11.2 BERT-family model or a big language model?
 
 |  | BERT-family (encoder) | Large language model (decoder) |
 | --- | --- | --- |
@@ -2139,15 +3465,15 @@ Start with a nightly script that does steps 1–2 (detect and log) and sends you
 
 **A common healthy pattern:** use an LLM to *bootstrap* (write questions, pre-label NER), then fine-tune a small BERT-family model to do the job fast and cheaply at scale, and let an LLM write the final answers in RAG.
 
-## 9.3 What BERT-style models are not good at
+## 11.3 What BERT-style models are not good at
 
-- **Free-form generation** (§3.11).
+- **Free-form generation** (Section 3.11).
 - **Long documents** in one go: classic BERT sees about 512 tokens. Chunk the text, or choose a long-context model such as ModernBERT.
 - **Languages other than English**, unless you choose a multilingual model.
 - **Reasoning and following instructions:** that is LLM territory.
 - **Knowing about events after its training**: it needs fresh data (Part 8).
 
-## 9.4 Top beginner mistakes
+## 11.4 Top beginner mistakes
 
 | # | Mistake | Quick fix |
 | --- | --- | --- |
@@ -2164,7 +3490,7 @@ Start with a nightly script that does steps 1–2 (detect and log) and sends you
 | 11 | Fine-tuning only on new data | Mix in old and general data |
 | 12 | Expecting BERT to write essays | Use a decoder; keep BERT for retrieval |
 
-## 9.5 Mini glossary
+## 11.5 Mini glossary
 
 | Word | Meaning |
 | --- | --- |
@@ -2196,8 +3522,18 @@ Start with a nightly script that does steps 1–2 (detect and log) and sends you
 | **Data drift** | Real-world data moving away from training data |
 | **Replay** | Mixing old examples into new training to prevent forgetting |
 | **Blue/green re-index** | Build the new index alongside the old, then switch both together |
+| **Few-shot learning** | Learning a task from only a handful of labelled examples |
+| **Contrastive learning** | Learning by comparing: “these two are alike, those two are not” |
+| **SetFit** | Few-shot classifier: fine-tune a sentence-transformer on *pairs*, then fit a small head |
+| **UMAP** | Shrinks long vectors to a few numbers while keeping neighbours as neighbours (the “flat atlas”) |
+| **HDBSCAN** | Finds crowds of any shape without being told how many; strays become noise (`-1`) |
+| **Noise / topic −1** | Documents that sit in no crowd, so no topic claims them |
+| **c-TF-IDF** | TF-IDF with each topic glued into one mega-document; its top words name the topic |
+| **GLiNER** | Zero-shot NER model: you pass entity labels as plain text and it matches word spans to them |
+| **Span** | A run of consecutive words that might be one entity |
+| **Threshold** | The minimum score a prediction needs to be kept |
 
-## 9.6 Quick questions and short answers
+## 11.6 Quick questions and short answers
 
 **Is BERT the same as ChatGPT?** No. BERT is an *encoder* (a reader). ChatGPT-style models are *decoders* (writers).
 
@@ -2215,7 +3551,15 @@ Start with a nightly script that does steps 1–2 (detect and log) and sends you
 
 **What is the first thing to check when quality suddenly drops?** Whether *you* changed something (model, prefix, chunker, index) before assuming users changed.
 
-## 9.7 One-page cheat sheet
+**I only have a handful of labelled examples per category. What should I use?** SetFit (Section 3.5a): it turns each small set into many pairs, reshapes the embedding model with them, then fits a small classifier. Compare it with plain embeddings plus logistic regression (Section 3.4) on a locked exam.
+
+**Why does BERTopic put so many documents in topic −1?** Topic −1 holds the “strays” that HDBSCAN found in no crowd. It is normal. Lower `min_cluster_size` or `min_samples`, or use `reduce_outliers`, if it bothers you (Section 3.8a).
+
+**What does c-TF-IDF do that normal TF-IDF does not?** It treats each *topic* as one big document, so it finds the words that are common in this topic and rare in all the others. Those words become the topic’s name (Section 3.8a).
+
+**How can GLiNER find entity types it was never trained on?** It reads your label names as text and matches word spans to them on a shared meaning map, and it was trained on thousands of different entity types, so it learned the *skill* of matching, not a fixed list (Section 3.6a).
+
+## 11.7 One-page cheat sheet
 
 ```text
 BERT = a reader that turns text into meaning-numbers, using the words on both sides.
@@ -2223,8 +3567,11 @@ One body, many heads:  vectors | one label | one tag per word | answer span | [M
 
 SEARCH       embed docs once → embed question → nearest vectors → (reranker on top 50) → (LLM writes answer = RAG)
 CLASSIFY     embeddings + LogisticRegression  or  fine-tune AutoModelForSequenceClassification
+FEW LABELS   SetFit: fine-tune on PAIRS (same class = 1, different = 0), then a LogisticRegression head; ~8 examples per class
 NER          cased BERT + token head; first word-piece gets the tag, others -100; score = entity F1 per type
+NEW LABELS   GLiNER (zero-shot NER): model.predict_entities(text, labels, threshold=0.5); labels are plain-text input; regex for strict formats
 TOPICS       BERTopic: embed → UMAP → HDBSCAN → name with c-TF-IDF   (-1 = misc bin)
+             UMAP = flat atlas | HDBSCAN = find crowds, leave strays | c-TF-IDF = words special to each pile (names never change the grouping)
 GENERATION   not BERT. Use a decoder; keep BERT for retrieval.
 
 TRAINING DATA   clean & chunk → make examples → round-trip filter → dedupe → SPLIT BY DOCUMENT → JSONL + dataset note
@@ -2236,7 +3583,7 @@ DRIFT   save the "before" photo → daily label-free report → monthly fresh ex
         ship model + index together; refresher fine-tune with old data mixed in
 ```
 
-## 9.8 Where to read more
+## 11.8 Where to read more
 
 - BERT paper (Devlin et al., 2018): https://arxiv.org/abs/1810.04805
 - Hugging Face LLM / NLP course (free): https://huggingface.co/learn/nlp-course
@@ -2249,3 +3596,10 @@ DRIFT   save the "before" photo → daily label-free report → monthly fresh ex
 - KeyBERT: https://github.com/MaartenGr/KeyBERT
 - seqeval (entity-level NER metrics): https://github.com/chakki-works/seqeval
 - GLiNER (zero-shot NER): https://github.com/urchade/GLiNER
+- GLiNER paper (Zaratiana et al., 2023): https://arxiv.org/abs/2311.08526
+- SetFit repository: https://github.com/huggingface/setfit
+- SetFit paper (Tunstall et al., 2022): https://arxiv.org/abs/2209.11055
+- BERTopic paper (Grootendorst, 2022): https://arxiv.org/abs/2203.05794
+- UMAP documentation: https://umap-learn.readthedocs.io
+- UMAP paper (McInnes et al., 2018): https://arxiv.org/abs/1802.03426
+- HDBSCAN documentation: https://hdbscan.readthedocs.io
