@@ -11,8 +11,22 @@ Read Bert for Beginners
 https://saiabhilash696.github.io/my-learnings/BERT%20for%20Beginners/BERT%20for%20Beginners%20One%20Model%2C%20Many%20Jobs.html
 
 Read Transformers
-https://saiabhilash696.github.io/my-learnings/Transformers/04_transformers_quantization_lora_qlora_beginner_updated.md
+https://saiabhilash696.github.io/my-learnings/Transformers/04_transformers_quantization_lora_qlora_beginner_updated.html
 
 # Things to say in interview
 
 say u are good at random forests
+
+
+
+# Python
+python command to convert markdown to .ipynb
+
+```python
+python ../md2ipynb.py guide.md --split-headings 2
+```
+
+python command to convert .ipynb to markdown
+```python
+python md2ipynb.py guide.ipynb
+```
