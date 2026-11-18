@@ -8,10 +8,12 @@ Read Interview Guide - for statistics, ml basics(normalization, regularization, 
 https://saiabhilash696.github.io/my-learnings/Interview Guide/Interview Prep Guide.html
 
 Read Bert for Beginners
-https://saiabhilash696.github.io/my-learnings/BERT%20for%20Beginners/BERT%20for%20Beginners%20One%20Model%2C%20Many%20Jobs.html
+https://saiabhilash696.github.io/my-learnings/BERT%20for%20Beginners/BERT_for_Beginners_Complete_Guide.html
 
 Read Transformers
 https://saiabhilash696.github.io/my-learnings/Transformers/04_transformers_quantization_lora_qlora_beginner_updated.html
+
+
 
 # Things to say in interview
 
