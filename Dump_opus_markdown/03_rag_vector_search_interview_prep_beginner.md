@@ -37,11 +37,11 @@ Every formula here is worked through with real numbers, because "I know the BM25
 
 **Three layers, three different engineering problems:**
 
-| Layer | Runs | Optimised for | Fails by |
-|---|---|---|---|
-| Ingestion | Offline, batch | Correctness and structure preservation | Silently destroying information |
-| Artifacts | Storage | Memory footprint, query speed | Getting too expensive |
-| Inference | Online, per query | Latency and relevance | Being slow or returning junk |
+| Layer     | Runs              | Optimised for                          | Fails by                        |
+| --------- | ----------------- | -------------------------------------- | ------------------------------- |
+| Ingestion | Offline, batch    | Correctness and structure preservation | Silently destroying information |
+| Artifacts | Storage           | Memory footprint, query speed          | Getting too expensive           |
+| Inference | Online, per query | Latency and relevance                  | Being slow or returning junk    |
 
 Most beginners spend 90% of their attention on layer 3 and lose most of their quality in layer 1.
 
@@ -154,14 +154,14 @@ Now it embeds as being about refunds *and* processing time. Same content, dramat
 
 ### Chunking strategies
 
-| Strategy | How it works | Good for |
-|---|---|---|
-| **Heading/section based** | Split at document structure boundaries | Manuals, policies, wikis — anything with real headings |
-| **Recursive splitting** | Try paragraph → sentence → word boundaries until under the limit | General-purpose fallback (LangChain's default) |
-| **Table-aware** | Keep tables intact; if too large, split by row groups and repeat headers | Financial, specification documents |
-| **Semantic chunking** | Detect topic shifts using sentence-to-sentence similarity | Long narrative text with no headings |
-| **Sliding window** | Fixed size with overlap | Simple baseline, dense prose |
-| **Parent–child** | Embed a small child chunk for precision; return the larger parent for generation | Long technical documents — often the best of both |
+| Strategy                  | How it works                                                                     | Good for                                               |
+| ------------------------- | -------------------------------------------------------------------------------- | ------------------------------------------------------ |
+| **Heading/section based** | Split at document structure boundaries                                           | Manuals, policies, wikis — anything with real headings |
+| **Recursive splitting**   | Try paragraph → sentence → word boundaries until under the limit                 | General-purpose fallback (LangChain's default)         |
+| **Table-aware**           | Keep tables intact; if too large, split by row groups and repeat headers         | Financial, specification documents                     |
+| **Semantic chunking**     | Detect topic shifts using sentence-to-sentence similarity                        | Long narrative text with no headings                   |
+| **Sliding window**        | Fixed size with overlap                                                          | Simple baseline, dense prose                           |
+| **Parent–child**          | Embed a small child chunk for precision; return the larger parent for generation | Long technical documents — often the best of both      |
 
 ### The parent–child pattern, explained
 
@@ -216,12 +216,12 @@ That last one matters more than it looks. **Access control must be applied as a 
 
 ## 2.3 Text, tables and images
 
-| Content | Handling |
-|---|---|
-| **Text** | Preserve reading order, headings, breadcrumbs. Chunk on structure. |
-| **Tables** | Preserve row/column relationships. Serialize to Markdown or HTML. For large tables, split by row groups and **repeat the header row in every split**. |
-| **Images / figures** | Store the image reference and page metadata. Generate a caption or description for text retrieval, or use a multimodal embedding model. |
-| **Charts** | Keep the image, and also extract the textual facts and axis labels where possible. |
+| Content              | Handling                                                                                                                                              |
+| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Text**             | Preserve reading order, headings, breadcrumbs. Chunk on structure.                                                                                    |
+| **Tables**           | Preserve row/column relationships. Serialize to Markdown or HTML. For large tables, split by row groups and **repeat the header row in every split**. |
+| **Images / figures** | Store the image reference and page metadata. Generate a caption or description for text retrieval, or use a multimodal embedding model.               |
+| **Charts**           | Keep the image, and also extract the textual facts and axis labels where possible.                                                                    |
 
 ### The table trick
 
@@ -292,15 +292,15 @@ Any mismatch here degrades retrieval with no error message.
 
 ## 3.2 Choosing a vector database
 
-| Option | Notes |
-|---|---|
-| **FAISS** | A similarity-search *library*, not a database. Excellent inside a custom service. No persistence, filtering or replication out of the box. |
-| **Pinecone** | Managed, dense + sparse/hybrid. Low ops burden, higher cost. |
-| **Milvus / Zilliz** | Full vector database, many index types, scales well. More operational complexity. |
-| **Weaviate** | Vector DB with integrated keyword and hybrid retrieval. |
-| **Qdrant** | Dense + sparse, strong filtering, multiple fusion options. Good Rust performance. |
-| **pgvector** | Vector search inside PostgreSQL. Compelling when relational data and vectors should live together and you already run Postgres. |
-| **Elasticsearch / OpenSearch** | Mature BM25 plus vector support. Often the pragmatic choice if you already run it. |
+| Option                         | Notes                                                                                                                                      |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| **FAISS**                      | A similarity-search *library*, not a database. Excellent inside a custom service. No persistence, filtering or replication out of the box. |
+| **Pinecone**                   | Managed, dense + sparse/hybrid. Low ops burden, higher cost.                                                                               |
+| **Milvus / Zilliz**            | Full vector database, many index types, scales well. More operational complexity.                                                          |
+| **Weaviate**                   | Vector DB with integrated keyword and hybrid retrieval.                                                                                    |
+| **Qdrant**                     | Dense + sparse, strong filtering, multiple fusion options. Good Rust performance.                                                          |
+| **pgvector**                   | Vector search inside PostgreSQL. Compelling when relational data and vectors should live together and you already run Postgres.            |
+| **Elasticsearch / OpenSearch** | Mature BM25 plus vector support. Often the pragmatic choice if you already run it.                                                         |
 
 ### How to actually decide
 
@@ -345,12 +345,12 @@ A production system may decide:
 
 ### Query rewriting and expansion
 
-| Technique | What it does | Cost |
-|---|---|---|
-| **Rewriting** | "when did they ship it" → "when did Acme Corp ship order #4471" using conversation history | One LLM call of latency |
-| **Multi-query expansion** | Generate 3 paraphrases, retrieve for each, union the results | 3× retrieval cost |
-| **HyDE** | Ask an LLM to *hallucinate* an ideal answer, embed that instead of the question — a fake answer is lexically closer to a real answer than a question is | One LLM call |
-| **Decomposition** | Split "compare X and Y policies" into two sub-queries | Multiple retrievals |
+| Technique                 | What it does                                                                                                                                            | Cost                    |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------- |
+| **Rewriting**             | "when did they ship it" → "when did Acme Corp ship order #4471" using conversation history                                                              | One LLM call of latency |
+| **Multi-query expansion** | Generate 3 paraphrases, retrieve for each, union the results                                                                                            | 3× retrieval cost       |
+| **HyDE**                  | Ask an LLM to *hallucinate* an ideal answer, embed that instead of the question — a fake answer is lexically closer to a real answer than a question is | One LLM call            |
+| **Decomposition**         | Split "compare X and Y policies" into two sub-queries                                                                                                   | Multiple retrievals     |
 
 All of these increase recall and add latency, and all risk **query drift** — the rewritten query asks something subtly different. Always measure whether rewriting actually helps *your* workload before shipping it.
 
@@ -389,14 +389,14 @@ $$
 \frac{f(q_i,D)\,(k_1+1)}{f(q_i,D)+k_1\left(1-b+b\frac{|D|}{\text{avgdl}}\right)}
 $$
 
-| Symbol | Meaning |
-|---|---|
+| Symbol    | Meaning                                                |
+| --------- | ------------------------------------------------------ |
 | `f(qᵢ,D)` | how many times query term `qᵢ` appears in document `D` |
-| `IDF(qᵢ)` | inverse document frequency — rare terms score higher |
-| `\|D\|` | length of this document in tokens |
-| `avgdl` | average document length in the corpus |
-| `k₁` | term-frequency saturation (typically 1.2–2.0) |
-| `b` | length normalization strength (typically 0.75) |
+| `IDF(qᵢ)` | inverse document frequency — rare terms score higher   |
+| `\|D\|`   | length of this document in tokens                      |
+| `avgdl`   | average document length in the corpus                  |
+| `k₁`      | term-frequency saturation (typically 1.2–2.0)          |
+| `b`       | length normalization strength (typically 0.75)         |
 
 ## 5.2 The three intuitions inside the formula
 
@@ -554,12 +554,12 @@ $$
 \text{RRF}(d)=\sum_{r \in R}\frac{w_r}{k+\text{rank}_r(d)}
 $$
 
-| Symbol | Meaning |
-|---|---|
-| `R` | the set of ranked lists (dense, BM25, fuzzy) |
+| Symbol      | Meaning                                             |
+| ----------- | --------------------------------------------------- |
+| `R`         | the set of ranked lists (dense, BM25, fuzzy)        |
 | `rank_r(d)` | position of document `d` in list `r`, starting at 1 |
-| `w_r` | optional weight for that retriever |
-| `k` | smoothing constant, conventionally **60** |
+| `w_r`       | optional weight for that retriever                  |
+| `k`         | smoothing constant, conventionally **60**           |
 
 ### What `k` does
 
@@ -620,11 +620,11 @@ Use this when your evaluation data shows one signal is systematically more trust
 
 ### RRF vs score fusion vs learned ranking
 
-| Method | Idea | Main challenge |
-|---|---|---|
-| Weighted score fusion | Combine normalized scores | Calibration is fragile across queries |
-| **RRF** | Combine rank positions | **Discards score magnitude** — a document that scored 0.99 and one that scored 0.71 look identical if both ranked 1st |
-| Learned ranker (LTR) | Learn how signals predict relevance | Needs training data, monitoring, and retraining |
+| Method                | Idea                                | Main challenge                                                                                                        |
+| --------------------- | ----------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| Weighted score fusion | Combine normalized scores           | Calibration is fragile across queries                                                                                 |
+| **RRF**               | Combine rank positions              | **Discards score magnitude** — a document that scored 0.99 and one that scored 0.71 look identical if both ranked 1st |
+| Learned ranker (LTR)  | Learn how signals predict relevance | Needs training data, monitoring, and retraining                                                                       |
 
 > **The honest limitation of RRF:** it cannot distinguish "confidently the best" from "narrowly the best." If your dense retriever returns a top result at 0.31 cosine similarity — meaning nothing in the corpus is really relevant — RRF still treats it as rank 1 and gives it full weight. That's why a good pipeline also has an **absolute score floor** to detect "no good results," independent of fusion.
 
@@ -823,10 +823,10 @@ With nprobe = 10:
 
 That's a first-order estimate. Real clusters are unbalanced, so a probed list may hold 3,000 vectors or 200.
 
-| Parameter | Set at | Controls | Changing it requires |
-|---|---|---|---|
-| `nlist` | Build time | How finely the space is partitioned | **Rebuilding the index** |
-| `nprobe` | Query time | How many partitions you search | Nothing — tune it live |
+| Parameter | Set at     | Controls                            | Changing it requires     |
+| --------- | ---------- | ----------------------------------- | ------------------------ |
+| `nlist`   | Build time | How finely the space is partitioned | **Rebuilding the index** |
+| `nprobe`  | Query time | How many partitions you search      | Nothing — tune it live   |
 
 **Rule of thumb:** `nlist ≈ 4√N` to `16√N`. For N = 10M, √N ≈ 3,162, so nlist between roughly 12,000 and 50,000.
 
@@ -852,11 +852,11 @@ Layer 0 (all nodes): A─B─C─D─E─F─G─H─I─J         every vector,
 
 Search enters at the top layer, greedily walks toward the query, then descends. Upper layers cover distance fast; lower layers refine.
 
-| Parameter | Meaning | Effect |
-|---|---|---|
-| `M` | Max links per node | Higher = better recall, more memory, slower build |
-| `ef_construction` | Candidate list size during build | Higher = better graph quality, slower build |
-| `ef_search` | Candidate list size at query time | **Higher = better recall, higher latency** — your live tuning knob |
+| Parameter         | Meaning                           | Effect                                                             |
+| ----------------- | --------------------------------- | ------------------------------------------------------------------ |
+| `M`               | Max links per node                | Higher = better recall, more memory, slower build                  |
+| `ef_construction` | Candidate list size during build  | Higher = better graph quality, slower build                        |
+| `ef_search`       | Candidate list size at query time | **Higher = better recall, higher latency** — your live tuning knob |
 
 `ef_search` is HNSW's `nprobe`: adjustable at query time without rebuilding.
 
@@ -864,12 +864,12 @@ Search enters at the top layer, greedily walks toward the query, then descends. 
 
 ## 9.6 Comparison
 
-| Index | Build | Search | Memory | Recall | Best for |
-|---|---|---|---|---|---|
-| Flat | None | Slow at scale | Vectors only | Exact | <100k vectors, ground truth |
-| LSH | Fast | Fast for suitable workloads | Can be high | Tuning-dependent | Specific metric/update patterns |
-| IVF | Moderate (k-means) | Fast, tunable | Moderate | Tunable via `nprobe` | Large corpora, especially with PQ |
-| HNSW | Slow | Very fast | **High** | Usually very high | Low-latency production, moderate churn |
+| Index | Build              | Search                      | Memory       | Recall               | Best for                               |
+| ----- | ------------------ | --------------------------- | ------------ | -------------------- | -------------------------------------- |
+| Flat  | None               | Slow at scale               | Vectors only | Exact                | <100k vectors, ground truth            |
+| LSH   | Fast               | Fast for suitable workloads | Can be high  | Tuning-dependent     | Specific metric/update patterns        |
+| IVF   | Moderate (k-means) | Fast, tunable               | Moderate     | Tunable via `nprobe` | Large corpora, especially with PQ      |
+| HNSW  | Slow               | Very fast                   | **High**     | Usually very high    | Low-latency production, moderate churn |
 
 ```text
 NEVER SAY:  "HNSW is always best."
@@ -919,10 +919,10 @@ For unit vectors:   L2(A,B)² = 2 − 2·cos(A,B)
 
 L2 is a monotonically *decreasing* function of cosine similarity on unit vectors — so **on normalized vectors, cosine, dot product and L2 all produce the identical ranking.** They differ only in cost and in the numbers they report.
 
-| Metric | Magnitude-sensitive? | Typical use |
-|---|---|---|
-| Cosine | No | Semantic similarity — the default |
-| L2 | Yes | Euclidean geometry, k-means-based indexes |
+| Metric      | Magnitude-sensitive?    | Typical use                                                                         |
+| ----------- | ----------------------- | ----------------------------------------------------------------------------------- |
+| Cosine      | No                      | Semantic similarity — the default                                                   |
+| L2          | Yes                     | Euclidean geometry, k-means-based indexes                                           |
 | Dot product | Yes (unless normalized) | Efficient cosine on normalized vectors; also used when magnitude encodes confidence |
 
 > **Careful with "dot product is faster."** It is one fewer operation, but real performance depends on the library, SIMD support, whether normalization is precomputed, and the index implementation. The honest answer is "dot product on pre-normalized vectors avoids computing norms at query time, which is why it's the standard choice — but I'd benchmark rather than assume."
@@ -1051,14 +1051,14 @@ Challenges: p99 latency is set by your **slowest** shard, not the average (tail 
 
 ## 11.8 Trade-off summary
 
-| Method | Compression | Advantage | Cost |
-|---|---|---|---|
-| Full precision | 1× | Exact | Highest memory |
-| Float16 | 2× | Nearly free quality-wise | Minor |
-| Scalar (int8) | 4× | Simple, good accuracy | Small quantization error |
-| PQ | 16–64× | Strong compression, fast ADC | Approximate distances, codebook training |
-| Binary | 32× | Extreme compression, Hamming speed | Real recall loss — needs rescoring |
-| IVF-PQ | 16–64× + pruning | Handles billions of vectors | Most tuning complexity |
+| Method         | Compression      | Advantage                          | Cost                                     |
+| -------------- | ---------------- | ---------------------------------- | ---------------------------------------- |
+| Full precision | 1×               | Exact                              | Highest memory                           |
+| Float16        | 2×               | Nearly free quality-wise           | Minor                                    |
+| Scalar (int8)  | 4×               | Simple, good accuracy              | Small quantization error                 |
+| PQ             | 16–64×           | Strong compression, fast ADC       | Approximate distances, codebook training |
+| Binary         | 32×              | Extreme compression, Hamming speed | Real recall loss — needs rescoring       |
+| IVF-PQ         | 16–64× + pruning | Handles billions of vectors        | Most tuning complexity                   |
 
 ```text
 THE UNIVERSAL PATTERN
@@ -1221,18 +1221,18 @@ A system can have Recall@10 = 0.95 and still give bad answers — because the re
 
 # PART 14 — Common Interview Mistakes
 
-| # | The mistake | The corrected answer |
-|---|---|---|
-| 1 | "RAG is just embeddings and a vector database." | "RAG is a pipeline: parsing, chunking, indexing, multi-signal retrieval, fusion, reranking, generation, evaluation. Most quality is won or lost in parsing and chunking." |
-| 2 | "I'd use cosine similarity because it's the most accurate." | "On L2-normalized vectors, cosine, dot product and L2 give identical rankings. I'd normalize at index time and use dot product for efficiency." |
-| 3 | "Bigger chunks are better because they have more context." | "Bigger chunks average multiple topics into one vector and match nothing precisely. I'd use small chunks for matching and parent–child retrieval to give the LLM context." |
-| 4 | "Just add dense + BM25 + fuzzy scores together." | "Their scales are incompatible — BM25 is unbounded, cosine is [0,1], fuzzy is [0,100]. Either normalize and calibrate, or use RRF on ranks." |
-| 5 | "HNSW is the best index." | "It depends on corpus size, memory budget, latency target and update rate. HNSW for low-latency in-memory serving; IVF-PQ when the corpus exceeds RAM; Flat for ground truth." |
-| 6 | "Use the cross-encoder for retrieval, it's more accurate." | "A cross-encoder can't precompute document vectors, so scoring a full corpus needs one forward pass per document. It's strictly a second-stage reranker over a retriever's top-k." |
-| 7 | "We just swap the embedding model when a better one comes out." | "Different models produce incomparable vector spaces, so a swap means re-embedding the whole corpus and rebuilding the index. I'd build the new index in parallel, shadow-test it, and cut over behind a flag." |
-| 8 | "Recall@10 is 0.9, so the system works." | "Retrieval recall is a ceiling, not an outcome. I'd also measure reranker quality, answer faithfulness, citation accuracy and end-to-end latency." |
-| 9 | "Gradient accumulation gives more negatives." | "It doesn't — each forward pass still sees only its own batch. Use CachedMultipleNegativesRankingLoss for a larger effective negative pool." |
-| 10 | "We filter by permissions after retrieval." | "That silently shrinks result sets and can leak existence information. Access control must be a filter *inside* the retrieval query." |
+| #   | The mistake                                                     | The corrected answer                                                                                                                                                                                            |
+| --- | --------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | "RAG is just embeddings and a vector database."                 | "RAG is a pipeline: parsing, chunking, indexing, multi-signal retrieval, fusion, reranking, generation, evaluation. Most quality is won or lost in parsing and chunking."                                       |
+| 2   | "I'd use cosine similarity because it's the most accurate."     | "On L2-normalized vectors, cosine, dot product and L2 give identical rankings. I'd normalize at index time and use dot product for efficiency."                                                                 |
+| 3   | "Bigger chunks are better because they have more context."      | "Bigger chunks average multiple topics into one vector and match nothing precisely. I'd use small chunks for matching and parent–child retrieval to give the LLM context."                                      |
+| 4   | "Just add dense + BM25 + fuzzy scores together."                | "Their scales are incompatible — BM25 is unbounded, cosine is [0,1], fuzzy is [0,100]. Either normalize and calibrate, or use RRF on ranks."                                                                    |
+| 5   | "HNSW is the best index."                                       | "It depends on corpus size, memory budget, latency target and update rate. HNSW for low-latency in-memory serving; IVF-PQ when the corpus exceeds RAM; Flat for ground truth."                                  |
+| 6   | "Use the cross-encoder for retrieval, it's more accurate."      | "A cross-encoder can't precompute document vectors, so scoring a full corpus needs one forward pass per document. It's strictly a second-stage reranker over a retriever's top-k."                              |
+| 7   | "We just swap the embedding model when a better one comes out." | "Different models produce incomparable vector spaces, so a swap means re-embedding the whole corpus and rebuilding the index. I'd build the new index in parallel, shadow-test it, and cut over behind a flag." |
+| 8   | "Recall@10 is 0.9, so the system works."                        | "Retrieval recall is a ceiling, not an outcome. I'd also measure reranker quality, answer faithfulness, citation accuracy and end-to-end latency."                                                              |
+| 9   | "Gradient accumulation gives more negatives."                   | "It doesn't — each forward pass still sees only its own batch. Use CachedMultipleNegativesRankingLoss for a larger effective negative pool."                                                                    |
+| 10  | "We filter by permissions after retrieval."                     | "That silently shrinks result sets and can leak existence information. Access control must be a filter *inside* the retrieval query."                                                                           |
 
 ---
 

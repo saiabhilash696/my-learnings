@@ -1,6 +1,6 @@
 # BERT for Beginners: One Model, Many Jobs
 
-**Embeddings, search, reranking, classification (including few-shot learning with SetFit), NER (including GLiNER for labels you invent on the spot), topic modelling (including the UMAP, HDBSCAN and c-TF-IDF inside BERTopic), question answering, “text generation” (and its limits), fine-tuning, training data, and data drift — explained in plain English**
+**Embeddings (with mean vs CLS pooling, and cosine vs Euclidean similarity), search, reranking (including ColBERT late interaction), classification (including few-shot learning with SetFit), NER (including GLiNER for labels you invent on the spot), topic modelling (including the UMAP, HDBSCAN and c-TF-IDF inside BERTopic), question answering, “text generation” (and its limits), fine-tuning, training data, and data drift — explained in plain English**
 
 This guide is a beginner-friendly rewrite of the longer “Fine-Tuning Embedding Models” material. Nothing important was dropped, but every idea is explained with an everyday analogy first, then a small picture, then short code you can run.
 
@@ -13,11 +13,14 @@ This guide is a beginner-friendly rewrite of the longer “Fine-Tuning Embedding
 | Understand what BERT actually is | Part 1 |
 | See everything BERT can do at a glance | Part 2 |
 | Try each job with a few lines of code | Part 3 |
+| Understand pooling (mean vs CLS) and similarity (cosine vs Euclidean) | Sections 3.1a, 3.1b |
+| Understand ColBERT (late interaction, MaxSim) | Section 3.3a |
 | Teach BERT your own data | Parts 4–6 |
 | Prepare training data properly | Part 5 |
 | Measure whether it works | Part 7 |
 | Keep it working after launch (model drift, MLflow, retraining) | Part 8 |
-| Pick the right tool, or look up a word | Part 9 |
+| Choose an embedding model for retrieval | Part 9 |
+| Pick the right tool, or look up a word | Part 11 |
 
 ## Two labels you will see on code outputs
 
@@ -245,8 +248,9 @@ BERT’s body (the part that understands language) is the same for every job. Wh
 | 18 | **Text generation** | “Write me a paragraph” | New text | **Not what BERT is built for.** Workarounds in Section 3.11 | **No (honest answer)** |
 | 19 | **Few-shot classification (SetFit)** | “Label my texts when I have only a handful of examples per category” | One label | A sentence-BERT body fine-tuned on *pairs* of examples, then a small classifier on top (Section 3.5a) | Yes (add-on) |
 | 20 | **Zero-shot NER (GLiNER)** | “Highlight entity types I invent right now, with no training” | A span of text with a type | A BERT-style encoder matches word spans against label names (Section 3.6a) | Yes (add-on) |
+| 21 | **Multi-vector retrieval (ColBERT)** | “Match every question word against the document, not just one blurred summary” | Ranked passages | One vector per token; score = sum of best matches (MaxSim); Section 3.3a | Yes (add-on) |
 
-Rows 1–17, 19 and 20 are BERT’s home turf. Row 18 is where BERT needs help from a different kind of model.
+Rows 1–17 and 19–21 are BERT’s home turf. Row 18 is where BERT needs help from a different kind of model.
 
 ## 2.3 A mental shortcut: what comes out?
 
@@ -297,26 +301,420 @@ shape: (3, 384)
 
 Reading the grid: sentence 1 and 2 share no important words, yet score **0.72** (similar). Sentence 3 is about something else, so it scores about **0.1** against both. Each sentence became a list of 384 numbers.
 
-## 3.2 Semantic search / retrieval (“the librarian with index cards”)
+## 3.1a Pooling: mean vs CLS (“one answer from a whole class”)
 
-**Analogy:** a keyword search is like a librarian who only matches the exact words on a book’s cover. A **semantic search** librarian understands what you *mean*: ask for “car problems” and they also hand you the book about “automobile repairs.”
+In Section 3.1 one line did something quietly: `model.encode(...)`. It handed back **one** vector per sentence. But BERT itself does not do that. Here is the missing step.
 
-How it works: write an “index card” (vector) for every document **once**, in advance. When a question arrives, make a card for the question and find the closest document cards.
+**Analogy:** a class of students has just listened to a sentence. Every student (every **token**) now holds their own opinion about what it means. You need **one** answer for the whole class. There are two common ways to get it:
+
+- **CLS pooling:** ask the **class monitor**. The monitor (the special `[CLS]` token) sits at the front, listens to everybody, and is trained to give the summary.
+- **Mean pooling:** **average everyone’s answer**. No monitor, just the class vote.
+
+And one trap: **empty chairs**. When sentences of different lengths are batched together, short ones are padded with dummy `[PAD]` tokens. If you count the empty chairs as voters, the average is wrong.
 
 ```text
-  ONCE, in advance
-    1. Turn every document into a vector
-    2. Store the vectors
+  "The cat sat on the mat."  →  tokenizer  →  [CLS] the cat sat on the mat . [SEP]    (9 tokens)
 
-  EVERY TIME someone asks
-    3. Turn the question into a vector
-    4. Find the closest document vectors
-    5. Return the top matches
+  BERT body output  (last_hidden_state):  shape (1, 9, 384)
+                                                 │  │   └── 384 numbers per token
+                                                 │  └────── 9 tokens
+                                                 └───────── 1 sentence
+
+        token:   [CLS]   the    cat    sat   ...    .    [SEP]
+        vector:   v0     v1     v2     v3    ...    v7    v8
+                  │      └──────────────┬─────────────────┘
+          CLS pooling             MEAN pooling
+         "use v0 only"      "add all real v's, divide by their count"
+                  │                     │
+                  └──────────┬──────────┘
+                             ▼
+              ONE vector for the sentence: shape (1, 384)
 ```
 
-This design is called a **bi-encoder** (“two separate encodings”: one for the question, one for each document).
+### A tiny example with real arithmetic
+
+Pretend each token vector has only 4 numbers, and the sentence “hello world” was padded to length 5:
+
+| Token | Vector | Attention mask |
+| --- | --- | --- |
+| `[CLS]` | [1, 2, 0, 4] | 1 |
+| hello | [3, 0, 2, 2] | 1 |
+| world | [5, 4, 2, 0] | 1 |
+| `[SEP]` | [3, 2, 4, 2] | 1 |
+| `[PAD]` | [9, 9, 9, 9] (garbage) | **0** |
+
+The **attention mask** is BERT’s list of “which chairs are really occupied”: 1 = real token, 0 = padding.
+
+```text
+CLS pooling   →  take row 0                           =  [1, 2, 0, 4]
+
+Mean pooling  →  add the 4 real rows:  [1+3+5+3, 2+0+4+2, 0+2+2+4, 4+2+0+2] = [12, 8, 8, 8]
+                 divide by 4:                                               =  [3, 2, 2, 2]
+
+Forgot the mask (divide all 5 rows by 5):  first number = (12 + 9) / 5 = 4.2   ← polluted by padding
+```
 
 ```python
+import numpy as np
+
+H = np.array([[1,2,0,4],[3,0,2,2],[5,4,2,0],[3,2,4,2],[9,9,9,9]], float)   # 5 tokens x 4 numbers
+mask = np.array([1,1,1,1,0], float)
+
+print("CLS pooling      :", H[0])
+print("mean (with mask) :", (H * mask[:, None]).sum(0) / mask.sum())
+print("mean (NO mask)   :", H.mean(0))
+```
+
+**Output (executed):**
+
+```text
+CLS pooling      : [1. 2. 0. 4.]
+mean (with mask) : [3. 2. 2. 2.]
+mean (NO mask)   : [4.2 3.4 3.4 3.4]
+```
+
+The no-mask version is the classic bug: the same sentence would get a **different embedding depending on how much padding its batch happened to have**. Always use the mask.
+
+### The real thing, step by step
+
+```python
+import torch
+from transformers import AutoTokenizer, AutoModel
+
+name  = "sentence-transformers/all-MiniLM-L6-v2"
+tok   = AutoTokenizer.from_pretrained(name)
+model = AutoModel.from_pretrained(name)
+
+batch = tok(["The cat sat on the mat.", "Hi"], padding=True, return_tensors="pt")
+with torch.no_grad():
+    hidden = model(**batch).last_hidden_state              # (2, seq_len, 384): one vector per token
+
+# CLS pooling: just the first token
+cls_emb = hidden[:, 0]                                      # (2, 384)
+
+# Mean pooling: average only the real tokens
+mask     = batch["attention_mask"].unsqueeze(-1).float()    # (2, seq_len, 1)
+mean_emb = (hidden * mask).sum(1) / mask.sum(1).clamp(min=1e-9)   # (2, 384)
+
+print("hidden :", tuple(hidden.shape))
+print("cls    :", tuple(cls_emb.shape))
+print("mean   :", tuple(mean_emb.shape))
+```
+
+**Output (illustrative):**
+
+```text
+hidden : (2, 9, 384)
+cls    : (2, 384)
+mean   : (2, 384)
+```
+
+Both methods return the same **shape**, but the **numbers inside are different**, so they are not interchangeable.
+
+### The easy way: let sentence-transformers do it
+
+`model.encode(...)` already includes the pooling step. The choice is stored inside the model folder (in `1_Pooling/config.json`), and you can see it by printing the model:
+
+```python
+from sentence_transformers import SentenceTransformer
+
+model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+print(model)
+```
+
+**Output (illustrative; look for the Pooling line):**
+
+```text
+SentenceTransformer(
+  (0): Transformer({'max_seq_length': 256, ...}) with Transformer model: BertModel
+  (1): Pooling({'word_embedding_dimension': 384, 'pooling_mode_cls_token': False, 'pooling_mode_mean_tokens': True, ...})
+  (2): Normalize()
+)
+```
+
+To build your own model and pick the pooling yourself:
+
+```python
+from sentence_transformers import SentenceTransformer, models
+
+body = models.Transformer("bert-base-uncased", max_seq_length=256)
+pool = models.Pooling(body.get_word_embedding_dimension(), pooling_mode="mean")   # or "cls", "max", "lasttoken"
+my_model = SentenceTransformer(modules=[body, pool])
+```
+
+### Which pooling should I use?
+
+> **The main rule: use whatever the model was trained with.** During training, the model learns to put its summary in the place the loss function looked at. Switch pooling afterwards and quality usually drops noticeably.
+
+| Situation | Pooling |
+| --- | --- |
+| `all-MiniLM`, `all-mpnet`, E5, GTE (typical) | **Mean** |
+| BGE models (typical) | **CLS** |
+| Raw `bert-base` that nobody fine-tuned for similarity | **Mean** (the `[CLS]` vector of plain BERT is poor for similarity) |
+| Fine-tuning your own encoder with sentence-transformers | **Mean** is the default and a solid choice |
+| Decoder-style embedding models (GPT-like) | Often **last-token** pooling |
+| Classification head on BERT (Section 3.4) | **CLS**: the head is trained on that vector |
+
+Model families differ, so always confirm in the model card or the pooling config.
+
+**Why the trade-off exists:**
+
+- **Mean pooling** uses every token, so it is robust and captures the overall content. It is the safe default for models that were not specially trained to pack everything into `[CLS]`.
+- **CLS pooling** is simple and cheap, and works very well when training directly supervised the `[CLS]` vector (as with the contrastive training behind BGE).
+
+**Three traps:**
+
+1. **Forgetting the attention mask** when mean pooling (shown above).
+2. **Mixing poolings:** index documents with one pooling and embed queries with another, and search quietly gets worse. Pooling, prefix (Section 6.1) and normalisation must be identical everywhere.
+3. **Skipping normalisation** when the model expects it. Mean-pooled vectors have varying lengths, which is why a `Normalize()` layer usually follows (see the next section for why that matters).
+
+## 3.1b Cosine similarity vs Euclidean distance (“direction or distance?”)
+
+Once you have sentence vectors, you need a way to say “how close are these two?” Two rulers are common.
+
+**Analogy:** two glasses of lemonade. One is a small cup, the other a giant jug, but they are the **same recipe**.
+
+- **Cosine similarity** compares the **taste** (the direction). Same recipe means a perfect match, however much lemonade there is.
+- **Euclidean distance** compares **how far apart the two are in absolute terms**: how much more is in the jug. The jug and the cup are far apart, even though they taste identical.
+
+```text
+   a = [1, 2, 3]       b = [2, 4, 6]       c = [3, 2, 1]
+
+   a and b: same direction (angle 0°), b is twice as long
+            cosine = 1.0  (perfect match)      distance = 3.74 (far apart)
+
+   a and c: different directions, same length
+            cosine = 0.71 (less alike)         distance = 2.83 (closer)
+
+   cosine asks:     "do they point the same way?"
+   euclidean asks:  "how far apart are the two points?"
+```
+
+Formulas:
+
+```text
+cosine(a, b)    = (a · b) / (‖a‖ × ‖b‖)         range −1 to +1      higher = more similar
+euclidean(a, b) = sqrt( Σ (aᵢ − bᵢ)² )           range 0 to ∞        lower  = more similar
+dot(a, b)       = Σ aᵢ × bᵢ                      (cosine without the length division)
+```
+
+(Part 9, Section 1.2 has another hand-worked cosine example with unit-length vectors.)
+
+### A sample math problem
+
+Three 3-number vectors:
+
+```text
+a = [1, 2, 3]
+b = [2, 4, 6]      (same direction as a, just twice as long)
+c = [3, 2, 1]      (different direction, same length as a)
+```
+
+**Cosine similarity**
+
+```text
+‖a‖ = √(1+4+9)  = √14 ≈ 3.742
+‖b‖ = √(4+16+36) = √56 ≈ 7.483
+‖c‖ = √14 ≈ 3.742
+
+a·b = 1×2 + 2×4 + 3×6 = 28    →  cos(a, b) = 28 / (3.742 × 7.483) = 1.000
+a·c = 1×3 + 2×2 + 3×1 = 10    →  cos(a, c) = 10 / (3.742 × 3.742) = 10/14 ≈ 0.714
+```
+
+**Euclidean distance**
+
+```text
+d(a, b) = √( (1−2)² + (2−4)² + (3−6)² ) = √(1+4+9) = √14 ≈ 3.742
+d(a, c) = √( (1−3)² + (2−2)² + (3−1)² ) = √(4+0+4) = √8  ≈ 2.828
+```
+
+| Pair | Cosine similarity | Euclidean distance | Who looks “closer”? |
+| --- | --- | --- | --- |
+| a vs b | **1.000** | 3.742 | cosine says **b**, a perfect match |
+| a vs c | 0.714 | **2.828** | Euclidean says **c**, because b is long and far away |
+
+**The two rulers disagree.** Which is right depends on whether *length* carries meaning in your data.
+
+### The bridge: normalise, and they agree
+
+Scale every vector to length 1 (“L2-normalise”). For unit vectors:
+
+```text
+‖a − b‖²  =  2 − 2 × cos(a, b)
+```
+
+So a bigger cosine means a smaller distance, always, and **both rulers give the same ranking**. Check it on our example (`a` and `c` normalised):
+
+```text
+cos(a, c) = 0.714     →   distance = √(2 − 2×0.714) = √0.572 = 0.756
+direct:  a_n = [0.267, 0.535, 0.802],  c_n = [0.802, 0.535, 0.267]
+         differences [−0.535, 0, 0.535] → squares sum to 0.572 → √ = 0.756  ✓
+```
+
+```python
+import numpy as np
+
+a = np.array([1, 2, 3.]); b = np.array([2, 4, 6.]); c = np.array([3, 2, 1.])
+
+cos = lambda x, y: x @ y / (np.linalg.norm(x) * np.linalg.norm(y))
+euc = lambda x, y: np.linalg.norm(x - y)
+unit = lambda v: v / np.linalg.norm(v)
+
+print(f"a vs b: cosine={cos(a,b):.3f}  euclidean={euc(a,b):.3f}")
+print(f"a vs c: cosine={cos(a,c):.3f}  euclidean={euc(a,c):.3f}")
+print(f"after normalising, a vs c: euclidean={euc(unit(a),unit(c)):.3f}   sqrt(2-2cos)={np.sqrt(2-2*cos(a,c)):.3f}")
+print(f"dot product a·b={a@b:.0f}   a·c={a@c:.0f}")
+```
+
+**Output (executed):**
+
+```text
+a vs b: cosine=1.000  euclidean=3.742
+a vs c: cosine=0.714  euclidean=2.828
+after normalising, a vs c: euclidean=0.756   sqrt(2-2cos)=0.756
+dot product a·b=28   a·c=10
+```
+
+Note that the **dot product** also “prefers” the long vector `b` (28 against 10). On **unit vectors** the dot product *is* the cosine, which is why most search systems normalise once and then use the fast dot product.
+
+### With real sentences
+
+```python
+from sentence_transformers import SentenceTransformer, util
+import torch
+
+model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+sents = ["The cat sat on the mat.",
+         "A kitten is resting on a rug.",
+         "Stock markets fell sharply today."]
+emb = model.encode(sents, convert_to_tensor=True)           # shape (3, 384)
+
+print("cosine similarity (higher = closer):")
+print(util.cos_sim(emb[0], emb[1:]).round(decimals=2))
+print("euclidean distance (lower = closer):")
+print(torch.cdist(emb[0:1], emb[1:]).round(decimals=2))
+```
+
+**Output (illustrative):**
+
+```text
+cosine similarity (higher = closer):
+tensor([[0.66, 0.02]])
+euclidean distance (lower = closer):
+tensor([[0.82, 1.40]])
+```
+
+Cat and kitten are close by both rulers, cat and stock markets are far by both. Because this model’s vectors are normalised, both rulers rank them the same way, as the bridge formula promised. Your exact numbers will differ.
+
+### Which one should I use?
+
+| Situation | Use |
+| --- | --- |
+| Semantic search, RAG, duplicate detection, sentence similarity | **Cosine** (or dot product on normalised vectors) |
+| The model was trained with a cosine or dot-product loss (most sentence-transformers) | **Cosine** |
+| Vectors are already normalised | **Either**: the ranking is identical; dot product is fastest |
+| k-means clustering | **Euclidean** (the algorithm minimises squared Euclidean distance; on normalised vectors it behaves like cosine) |
+| Size carries meaning: sensor readings, coordinates, counts, anomaly detection | **Euclidean** |
+| The model card says to use dot product (the vector length encodes confidence or popularity) | **Dot product**, exactly as the card says |
+
+**Why cosine is the default for text:** the *length* of a text embedding is mostly noise (sentence length, word frequency), while the *direction* carries the meaning. Cosine throws the noise away.
+
+**Why Euclidean still matters:** when “how far apart in absolute terms” is the real question, discarding length discards information. Many classic algorithms also assume it.
+
+**Practical rules**
+
+1. **Match what the model was trained with.** Check the model card, the same rule as for pooling.
+2. **Normalise once, then stop worrying.** After L2-normalisation the choice does not change the ranking.
+3. **Similarity is not distance.** `1 − cosine similarity` is cosine *distance* (lower is better). A library that asks for a “metric” may want either. Mixing them up silently reverses your ranking.
+4. **Set the metric when you create the index**, because vector databases bake it in:
+
+```sql
+-- pgvector: three different operators
+ORDER BY embedding <=> query_vec    -- cosine distance
+ORDER BY embedding <-> query_vec    -- Euclidean (L2) distance
+ORDER BY embedding <#> query_vec    -- negative inner product (dot)
+```
+
+```python
+# FAISS: pick the index type that matches the metric
+import faiss
+index_dot = faiss.IndexFlatIP(384)   # inner product (use with normalised vectors = cosine)
+index_l2  = faiss.IndexFlatL2(384)   # Euclidean distance
+```
+
+> **The full pipeline so far:** tokenise → BERT body → **pooling** (3.1a) → normalise → **cosine / dot** (3.1b) → ranked results (3.2).
+
+### Try it yourself
+
+Take `u = [3, 4]` and `v = [6, 8]`. Work out the cosine similarity and the Euclidean distance. Which ruler says they are “the same”, and which says they are “apart”?
+
+*Answer:* the two vectors point the same way, so cosine = 1.0. The distance is √(3² + 4²) = 5, so Euclidean says they are 5 units apart. (Cosine: u·v = 18 + 32 = 50, ‖u‖ = 5, ‖v‖ = 10, and 50 / (5 × 10) = 1.)
+
+## 3.2 Bi-encoder: semantic search / retrieval
+
+**What it is:** a way to find the documents that best match a question, using **two separate vectors** that are compared at the end.
+
+```text
+document  →  BERT + pooling  →  document vector   (computed ONCE, in advance, and stored)
+question  →  BERT + pooling  →  question vector    (computed when someone asks)
+
+score = question vector · document vector          (dot product, or cosine similarity)
+```
+
+“Bi” means two: the question and the document go through the model **separately**. Pooling (Section 3.1a) turns each text into one vector. The comparison (Section 3.1b) is a dot product or cosine.
+
+### Toy example (2 numbers per vector instead of 384)
+
+```text
+question   q  = [0.6,  0.8]    "how do I reset my password?"
+document   d1 = [0.8,  0.6]    "Go to Settings > Security > Reset Password"
+document   d2 = [-0.6, 0.8]    "Manage your email notification preferences"
+```
+
+All three vectors have length 1, so the dot product equals the cosine similarity. Multiply matching numbers and add:
+
+```text
+score(q, d1) = (0.6 × 0.8)  + (0.8 × 0.6) = 0.48 + 0.48 = 0.96
+score(q, d2) = (0.6 × -0.6) + (0.8 × 0.8) = -0.36 + 0.64 = 0.28
+```
+
+The higher score wins, so `d1` is ranked first.
+
+```python
+import numpy as np
+
+q    = np.array([0.6, 0.8])
+docs = np.array([[0.8, 0.6],      # d1
+                 [-0.6, 0.8]])    # d2
+
+scores = docs @ q                 # one score per document
+print("scores:", scores)
+print("best document: d%d" % (scores.argmax() + 1))
+```
+
+**Output (executed):**
+
+```text
+scores: [0.96 0.28]
+best document: d1
+```
+
+With a million documents, `docs` is just a bigger table with a million rows, and `docs @ q` is still one fast operation. That is why this method scales.
+
+### Why it is fast, and what it costs
+
+| | |
+| --- | --- |
+| **Fast** | The document vectors do not depend on the question, so they are computed once and stored. Only the question is processed at search time. |
+| **Weakness** | Each document is squeezed into **one** vector before the question is known, so small details can get lost. |
+
+### The same thing with a real model
+
+```python
+from sentence_transformers import SentenceTransformer, util
+
+model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")   # small, fast, BERT-style
+
 docs = [
     "To reset your password, go to Settings > Security > Reset Password.",
     "Refunds are issued within 14 days of purchase if the item is unused.",
@@ -340,27 +738,85 @@ for hit in util.semantic_search(q_vec, doc_vecs, top_k=3)[0]:
 0.08  Refunds are issued within 14 days of purchase if the item is unused.
 ```
 
-Notice the query never says “reset”, and still the right document wins. Notice also the runner-up: the notifications document also says “Go to Settings >”, so it looks similar. Hold that thought for Section 3.3 and Section 6.1.
+The query never says “reset”, and the right document still wins, because the comparison is on meaning, not exact words. The runner-up (notifications) scores 0.31 only because it also says “Go to Settings >”. That kind of look-alike is what Sections 3.3 and 6.1 deal with.
 
-For millions of documents, store vectors in a *vector database or index* (FAISS, Qdrant, pgvector…) instead of a Python list. The idea is identical.
+For millions of documents, store the vectors in a vector database or index (FAISS, Qdrant, pgvector…) instead of a Python list. The idea is identical.
 
-## 3.3 Reranking (“shortlist, then interview”)
+## 3.3 Cross-encoder: reranking
 
-**Analogy:** hiring. Reading 10,000 résumés in depth is impossible, so first a **quick screen** picks 50 candidates (retrieval). Then a **careful interviewer** examines each of the 50 next to the job description (reranking).
-
-The careful interviewer is a **cross-encoder**: it reads the question and the document **together, in one go**, so every word of the question can “look at” every word of the document. Slower, but much more accurate.
+**What it is:** a model that reads the question and **one document together**, and outputs **one score** for that pair. It is used to re-order a shortlist.
 
 ```text
-  BI-ENCODER  (quick screen)
-    question  -> its own vector
-    document  -> its own vector   (made in advance)
-    then compare the two vectors
-    Fast. Works for millions of documents.
-
-  CROSS-ENCODER  (careful interview)
-    question + document read together -> one score
-    Slow. Use it only on the shortlist.
+[CLS] question [SEP] document [SEP]
+              │
+             BERT          every word can look at every other word, in both texts
+              │
+        [CLS] vector       one vector that summarises this PAIR
+              │
+     small linear layer    multiply-and-add: many numbers → 1 number
+              │
+           ONE score
 ```
+
+### Where does the score come from?
+
+A common question: “you get one vector from the combined text, so how is that a score? Bi-encoders compare two vectors.”
+
+The answer: there is no second vector to compare with. Instead, the one `[CLS]` vector goes through a **small scoring layer** (a linear layer). It holds learned weights, multiplies each number of the vector by a weight, adds them up, and adds a bias. The result is a single number.
+
+### Toy example (4 numbers instead of 768)
+
+Suppose BERT produced these `[CLS]` vectors for two different pairs, and the scoring layer has these learned weights:
+
+```text
+weights = [ 1.0,  0.5,  2.0, -1.0]      bias = 0.1
+
+Pair 1  (question + a relevant document):    [CLS] = [ 0.5, -1.0,  2.0,  0.3]
+Pair 2  (question + an unrelated document):  [CLS] = [-0.2,  1.5, -0.5,  0.8]
+```
+
+Score = (each number × its weight, added up) + bias:
+
+```text
+Pair 1:  (0.5×1.0) + (-1.0×0.5) + (2.0×2.0) + (0.3×-1.0) + 0.1
+       =  0.5      -  0.5       +  4.0       -  0.3       + 0.1   =  3.80
+
+Pair 2:  (-0.2×1.0) + (1.5×0.5) + (-0.5×2.0) + (0.8×-1.0) + 0.1
+       =  -0.2      +  0.75      -  1.0       -  0.8       + 0.1   = -1.15
+```
+
+```python
+import numpy as np
+
+w, b = np.array([1.0, 0.5, 2.0, -1.0]), 0.1
+cls_relevant   = np.array([ 0.5, -1.0,  2.0,  0.3])
+cls_irrelevant = np.array([-0.2,  1.5, -0.5,  0.8])
+
+print("relevant pair score  :", round(float(cls_relevant   @ w + b), 2))
+print("irrelevant pair score:", round(float(cls_irrelevant @ w + b), 2))
+```
+
+**Output (executed):**
+
+```text
+relevant pair score  : 3.8
+irrelevant pair score: -1.15
+```
+
+**Why does the number mean “relevance”?** Because of training. The model is shown many (question, document) pairs labelled relevant or not. It adjusts BERT and the scoring layer until relevant pairs get high scores and irrelevant pairs get low ones. (The weights above are made up; real ones are learned.)
+
+### Why it cannot be prepared in advance
+
+```text
+Bi-encoder:     vector = f(document)               needs only the document  → can be stored
+Cross-encoder:  score  = f(question, document)     needs BOTH               → nothing to store
+```
+
+The question and document are read together, so what BERT computes for each document word **depends on the question next to it**. The `[CLS]` vector exists only for that specific pair.
+
+So for 1,000,000 documents, answering one question means **1,000,000 separate BERT runs**, every time. That is too slow, so a cross-encoder is only used on a **shortlist**.
+
+### The same thing with a real model
 
 ```python
 from sentence_transformers import CrossEncoder
@@ -373,7 +829,7 @@ candidates = [
     "To reset your password, go to Settings > Security > Reset Password.",
     "Refunds are issued within 14 days of purchase.",
 ]
-scores = reranker.predict([(query, c) for c in candidates])
+scores = reranker.predict([(query, c) for c in candidates])      # one score per (query, candidate) pair
 for score, text in sorted(zip(scores, candidates), reverse=True):
     print(f"{score:6.2f}  {text}")
 ```
@@ -386,9 +842,302 @@ for score, text in sorted(zip(scores, candidates), reverse=True):
  -10.6  Refunds are issued within 14 days of purchase.
 ```
 
-The scores are raw (not 0–1); only the **order** matters. The look-alike “notifications” answer is pushed far below the correct one.
+The scores are raw numbers (not 0 to 1); only the **order** matters. The look-alike “notifications” answer, which the bi-encoder scored fairly high in Section 3.2, is now pushed far below the correct one.
 
-> **Golden rule:** never run a cross-encoder across your whole library. Two million documents means two million slow reads *per question*. Use the two-stage pattern: bi-encoder to shortlist 50–200, cross-encoder to pick the best few.
+### Bi-encoder vs cross-encoder
+
+| | Bi-encoder (3.2) | Cross-encoder (3.3) |
+| --- | --- | --- |
+| Input to BERT | One text at a time | Question and document **together** |
+| What you get | A vector per text | **One score** per pair |
+| How the score is made | Dot product or cosine of two vectors | Scoring layer on the `[CLS]` vector |
+| Can document work be stored in advance? | Yes | **No** |
+| Speed over a big library | Fast | Too slow |
+| Accuracy | Good | Better |
+
+> **Golden rule:** never run a cross-encoder across your whole library. Use the two-stage pattern: bi-encoder to shortlist 50 to 200 documents, cross-encoder to pick the best few.
+
+## 3.3a ColBERT: late interaction
+
+**What it is:** a retrieval method that **does not pool**. Instead of one vector per text, it keeps **one vector per token (word-piece)**, and compares the question’s tokens with the document’s tokens.
+
+(The name stands for **Co**ntextualized **L**ate Interaction over **BERT**. “Late interaction” means the question and document are encoded separately, like a bi-encoder, and only compared afterwards, token by token.)
+
+### The recipe
+
+```text
+1. Encode the document  → one vector per token   (done once in advance and stored, like a bi-encoder)
+2. Encode the question  → one vector per token
+3. Build a grid: dot product of every question token with every document token
+4. In each ROW (one question token), keep only the highest number
+5. Add up those row maximums  → the document's score
+```
+
+Step 4 and 5 together are called **MaxSim** (“maximum similarity”):
+
+```text
+score(question, document) = Σ over question tokens ( max over document tokens ( q · d ) )
+```
+
+### Toy example (2 numbers per token, all of length 1)
+
+```text
+Question tokens:      "reset"    = [0.8, 0.6]
+                      "password" = [0.0, 1.0]
+
+Document A tokens:    "reset"    = [0.6, 0.8]      Document B tokens:   "settings"      = [ 1.0,  0.0]
+                      "password" = [0.0, 1.0]                           "notifications" = [-0.6, -0.8]
+                      "settings" = [1.0, 0.0]                           "email"         = [ 0.6, -0.8]
+```
+
+**Step 3: the grid for Document A** (rows = question tokens, columns = document tokens):
+
+```text
+                    reset   password   settings    best in row
+   "reset"           0.96     0.60       0.80         0.96
+   "password"        0.80     1.00       0.00         1.00
+```
+
+One cell worked out: “reset” vs A’s “reset” = (0.8 × 0.6) + (0.6 × 0.8) = 0.48 + 0.48 = **0.96**.
+
+**Step 4 and 5:** take the best in each row, then add: 0.96 + 1.00 = **1.96**.
+
+**The grid for Document B:**
+
+```text
+                  settings  notifications   email     best in row
+   "reset"          0.80       -0.96         0.00         0.80
+   "password"       0.00       -0.80        -0.80         0.00
+```
+
+Score for B: 0.80 + 0.00 = **0.80**.
+
+Document A (1.96) beats Document B (0.80). You can also see **why**: “reset” found a close partner (0.96) and “password” found an exact one (1.00).
+
+```python
+import numpy as np
+
+def maxsim(Q, D):
+    """Q: (n_query_tokens, dim), D: (n_doc_tokens, dim). Rows are unit vectors."""
+    grid = Q @ D.T                    # step 3: every question token vs every document token
+    return grid.max(axis=1).sum()     # steps 4-5: best per question token, then add up
+
+Q     = np.array([[0.8, 0.6],         # "reset"
+                  [0.0, 1.0]])        # "password"
+doc_A = np.array([[0.6, 0.8], [0.0, 1.0], [1.0, 0.0]])
+doc_B = np.array([[1.0, 0.0], [-0.6, -0.8], [0.6, -0.8]])
+
+print("doc A score:", round(maxsim(Q, doc_A), 2))
+print("doc B score:", round(maxsim(Q, doc_B), 2))
+```
+
+**Output (executed):**
+
+```text
+doc A score: 1.96
+doc B score: 0.8
+```
+
+Three points to remember:
+
+- **Why max, not average?** A document only needs to contain *something* that matches each question token. Extra unrelated words in the document do not lower its score.
+- **Every question token is judged separately.** Each one must find a good partner.
+- **Scores are sums,** so they are not limited to 0 to 1. A longer question gives a bigger total. Compare scores only for the **same question**.
+
+### Why not just pool? (what ColBERT keeps)
+
+A second toy case. The question has two tokens: one pointing east `[1, 0]`, one pointing north `[0, 1]`.
+
+```text
+Document C: two tokens, both pointing north-east [0.707, 0.707]   (a vague blend)
+Document D: one token east [1, 0] and one token north [0, 1]       (contains both ideas exactly)
+```
+
+If you pool (average) each side into one vector and compare, both C and D end up pointing north-east, so both get a cosine of **1.00**: a tie. MaxSim does not tie:
+
+```text
+Document C:  0.707 + 0.707 = 1.41
+Document D:  1.000 + 1.000 = 2.00      ← the better match
+```
+
+**Output (executed):**
+
+```text
+doc C: one-vector cosine = 1.00   MaxSim = 1.41
+doc D: one-vector cosine = 1.00   MaxSim = 2.00
+```
+
+Averaging loses detail; keeping the tokens keeps it.
+
+### The cost: storage
+
+One vector per token instead of one per document needs much more space. For 1 million passages of 100 tokens each:
+
+```python
+passages, tokens, dim = 1_000_000, 100, 128
+colbert_gb = passages * tokens * dim * 2 / 1e9      # 2 bytes per number (fp16)
+single_gb  = passages * 384 * 4 / 1e9               # one 384-number float32 vector per passage
+print(f"ColBERT-style: {colbert_gb:.1f} GB   single vector: {single_gb:.1f} GB   ratio: {colbert_gb/single_gb:.1f}x")
+```
+
+**Output (executed):**
+
+```text
+ColBERT-style: 25.6 GB   single vector: 1.5 GB   ratio: 16.7x
+```
+
+About 17 times more space in this example. ColBERT stores 128 numbers per token, and ColBERTv2 adds compression; its paper reports a 6 to 10 times smaller footprint than the first ColBERT.
+
+### The three methods compared
+
+| | Bi-encoder (3.2) | ColBERT (3.3a) | Cross-encoder (3.3) |
+| --- | --- | --- | --- |
+| Stored per document | 1 vector | **1 vector per token** | Nothing |
+| What gets compared | Question vector vs document vector | **Question tokens vs document tokens** (grid) | Nothing to compare: question and document are read together |
+| How the score is made | Dot product or cosine | **Max per row, then sum** | Scoring layer on the `[CLS]` vector |
+| Pooling used? | Yes | **No** | Yes (`[CLS]`), but on the combined text |
+| Document work done in advance? | Yes | **Yes** | **No** |
+| Speed over a big library | Fastest | Fast | Too slow; shortlist only |
+| Storage | Small | **Large** | None |
+| Accuracy | Good | Often better | Best |
+
+### Using it with a real model: PyLate
+
+**PyLate** is a library built on top of sentence-transformers for ColBERT-style models. It handles the token vectors, the MaxSim scoring, and the index for you.
+
+```bash
+pip install pylate
+```
+
+(PyLate’s API has changed between versions; the code below follows the 1.6 documentation. Check the [PyLate docs](https://lightonai.github.io/pylate/) for yours.)
+
+#### Step 1: PyLate’s scoring function is the MaxSim you just did by hand
+
+PyLate’s `colbert_scores` takes token vectors and returns one score per (question, document) pair: a grid of dot products, the best match per question token, then a sum. Here are our toy vectors from above, fed in as tensors:
+
+```python
+import torch
+from pylate.scores import colbert_scores
+
+Q = torch.tensor([[[0.8, 0.6],                       # 1 question: 2 tokens x 2 numbers
+                   [0.0, 1.0]]])
+
+doc_tokens = torch.tensor([[[0.6, 0.8], [0.0, 1.0], [1.0, 0.0]],      # doc A: 3 tokens
+                           [[1.0, 0.0], [-0.6, -0.8], [0.6, -0.8]]])  # doc B: 3 tokens
+
+print(colbert_scores(Q, doc_tokens))                       # shape (1 question, 2 documents)
+```
+
+**Output (illustrative; the numbers are our hand calculation from above, I did not run PyLate itself):**
+
+```text
+tensor([[1.9600, 0.8000]])
+```
+
+So the toy example and the real library agree: Document A scores 1.96 and Document B scores 0.80.
+
+#### Step 2: Encode text into token vectors
+
+```python
+from pylate import models
+
+model = models.ColBERT(model_name_or_path="lightonai/GTE-ModernColBERT-v1")
+
+docs = [
+    "To reset your password, go to Settings > Security > Reset Password.",
+    "Refunds are issued within 14 days of purchase if the item is unused.",
+    "Go to Settings > Notifications to manage email alerts.",
+    "Our office is closed on public holidays.",
+]
+doc_vecs = model.encode(docs, is_query=False)            # documents: is_query=False
+q_vecs   = model.encode(["I can't log in, how do I change my password?"], is_query=True)
+
+print(len(doc_vecs), doc_vecs[0].shape)                  # one array PER DOCUMENT
+print(q_vecs[0].shape)                                   # one array for the question
+```
+
+**Output (illustrative; token counts depend on the tokenizer):**
+
+```text
+4 (17, 128)
+(32, 128)
+```
+
+Each document becomes a **table of token vectors**: here 17 tokens × 128 numbers (a different number of rows for each document). The question is padded to a fixed 32 rows, as in the original ColBERT recipe. There is no pooling anywhere.
+
+#### Step 3: Build an index and search it (first-stage retrieval)
+
+For many documents you do not want to compare against every token of every document. An **index** stores the token vectors in a form that can be searched quickly. PyLate’s documented default is a PLAID index:
+
+```python
+from pylate import indexes, retrieve
+
+index = indexes.PLAID(index_folder="pylate-index", index_name="help_center", override=True)
+retriever = retrieve.ColBERT(index=index)
+
+index.add_documents(documents_ids=["1", "2", "3", "4"], documents_embeddings=doc_vecs)
+
+scores = retriever.retrieve(queries_embeddings=q_vecs, k=3)    # top 3 for each question
+for hit in scores[0]:
+    print(f"{hit['score']:6.2f}  doc {hit['id']}:  {docs[int(hit['id']) - 1]}")
+```
+
+**Output (illustrative):**
+
+```text
+ 15.88  doc 1:  To reset your password, go to Settings > Security > Reset Password.
+ 10.21  doc 3:  Go to Settings > Notifications to manage email alerts.
+  7.64  doc 2:  Refunds are issued within 14 days of purchase if the item is unused.
+```
+
+`retrieve` returns, for each question, a list of `{"id": ..., "score": ...}` entries, best first. The scores are MaxSim sums, so they are not limited to 0 to 1.
+
+#### Step 4: Or use ColBERT only as a reranker (no index)
+
+Say a bi-encoder (Section 3.2) or keyword search already gave you a shortlist. You do not need an index: encode the shortlist and let PyLate re-order it.
+
+```python
+from pylate import rank
+
+shortlist_ids  = [[3, 1, 2]]                                    # for question 1: three candidate document ids
+shortlist_text = [[docs[2], docs[0], docs[1]]]                  # their texts, in the same order
+
+q_vecs   = model.encode(["How do I reset my password?"], is_query=True)
+cand_vecs = model.encode(shortlist_text, is_query=False)
+
+reranked = rank.rerank(documents_ids=shortlist_ids,
+                       queries_embeddings=q_vecs,
+                       documents_embeddings=cand_vecs)
+print(reranked[0])
+```
+
+**Output (illustrative):**
+
+```text
+[{'id': 1, 'score': 15.9}, {'id': 3, 'score': 10.2}, {'id': 2, 'score': 7.6}]
+```
+
+The input is a **list per question** (that question’s candidates), and the output is the same candidates sorted by MaxSim. This is the cheapest way to try ColBERT: it needs no index and no large storage.
+
+#### Which index?
+
+| Option | In plain words |
+| --- | --- |
+| `indexes.PLAID` | Compresses token vectors and searches in two stages. The documented default. Check the docs for its hardware requirements. |
+| `indexes.Voyager` | An HNSW index (a fast nearest-neighbour graph). Needs `pip install "pylate[voyager]"`. |
+| `indexes.WARP`, `indexes.TachiomIndex` | Newer alternatives with their own trade-offs. Read the PyLate retrieval docs before choosing. |
+| No index (`rank.rerank`) | Best for a shortlist of tens or hundreds of documents. |
+
+To shrink storage further, `model.encode(..., pool_factor=2)` merges similar token vectors before storing them. This trades a little accuracy for space; test it on your own exam (Part 7).
+
+PyLate can also **train** ColBERT models (contrastive and distillation losses). The training ideas match Section 6.1, and its README has runnable training examples.
+
+### When to use which
+
+- **Start with** a bi-encoder to shortlist, then a cross-encoder to re-order. This is the standard setup.
+- **Consider ColBERT** when one vector per document keeps missing exact terms or multi-part questions, and you want better accuracy than a bi-encoder without the cost of a cross-encoder over many documents.
+- **Skip ColBERT** if the storage cost or fewer ready-made tools is a problem and the bi-encoder plus cross-encoder already meets your quality target.
+- Whatever you pick, judge it on your own locked exam (Part 7): Recall@k and MRR, before and after.
 
 ## 3.4 Classification (“sorting the mail into pigeonholes”)
 
@@ -3437,7 +4186,8 @@ THE ONE-LINE ANSWER
 
 | Your goal | Use | Start with | Part |
 | --- | --- | --- | --- |
-| “Find the most relevant passages for a question” | Embedding search (+ reranker) | `all-MiniLM-L6-v2`, `bge`, `e5` | 3.2, 3.3, 6.1 |
+| “Find the most relevant passages for a question” | Embedding search (+ reranker) | `all-MiniLM-L6-v2`, `bge`, `e5` (check the pooling and metric on the model card) | 3.1a, 3.1b, 3.2, 3.3, 6.1, Part 9 |
+| “Single-vector search keeps missing exact terms or multi-part questions” | Multi-vector retrieval or reranking (ColBERT) | `lightonai/GTE-ModernColBERT-v1` via PyLate | 3.3a |
 | “Put the best result first among 50 candidates” | Reranker (cross-encoder) | `ms-marco-MiniLM` | 3.3, 6.4 |
 | “Label each text from a fixed list” | Classification | embeddings + logistic regression; then fine-tune | 3.4, 6.2 |
 | “Label with categories I invented today” | Zero-shot | an NLI model | 3.5 |
@@ -3532,6 +4282,17 @@ THE ONE-LINE ANSWER
 | **GLiNER** | Zero-shot NER model: you pass entity labels as plain text and it matches word spans to them |
 | **Span** | A run of consecutive words that might be one entity |
 | **Threshold** | The minimum score a prediction needs to be kept |
+| **Pooling** | Collapsing one vector per token into one vector per text |
+| **Mean pooling** | Average of all real token vectors (the attention mask ignores padding) |
+| **CLS pooling** | Use only the `[CLS]` token’s vector as the summary |
+| **Attention mask** | A 1/0 list marking real tokens (1) versus padding (0) |
+| **Euclidean distance** | Straight-line distance between two vectors; lower = closer |
+| **Dot product** | Multiply matching numbers and add; equals cosine on unit-length vectors |
+| **L2 normalisation** | Scaling a vector to length 1 so cosine, dot product and Euclidean distance rank the same |
+| **ColBERT** | Retrieval model that keeps one vector per token and compares them late (Contextualized Late Interaction over BERT) |
+| **Late interaction** | Encode query and document separately, then compare them token by token |
+| **MaxSim** | For each query token take its best match in the document, then add these up |
+| **Multi-vector** | Storing many vectors per document (one per token) instead of one |
 
 ## 11.6 Quick questions and short answers
 
@@ -3566,6 +4327,9 @@ BERT = a reader that turns text into meaning-numbers, using the words on both si
 One body, many heads:  vectors | one label | one tag per word | answer span | [MASK] word
 
 SEARCH       embed docs once → embed question → nearest vectors → (reranker on top 50) → (LLM writes answer = RAG)
+POOLING      token vectors → ONE vector: mean (use the attention mask) or CLS; use what the model was trained with; never mix
+SIMILARITY   cosine = direction, euclidean = distance; normalise first and the ranking is the same; similarity ≠ distance (1 − cos)
+COLBERT      keep a vector PER TOKEN; score = Σ over query tokens of max dot with any doc token (MaxSim); ~10-20x the storage
 CLASSIFY     embeddings + LogisticRegression  or  fine-tune AutoModelForSequenceClassification
 FEW LABELS   SetFit: fine-tune on PAIRS (same class = 1, different = 0), then a LogisticRegression head; ~8 examples per class
 NER          cased BERT + token head; first word-piece gets the tag, others -100; score = entity F1 per type
@@ -3597,6 +4361,12 @@ DRIFT   save the "before" photo → daily label-free report → monthly fresh ex
 - seqeval (entity-level NER metrics): https://github.com/chakki-works/seqeval
 - GLiNER (zero-shot NER): https://github.com/urchade/GLiNER
 - GLiNER paper (Zaratiana et al., 2023): https://arxiv.org/abs/2311.08526
+- Sentence-BERT paper (Reimers & Gurevych, 2019; pooling and sentence embeddings): https://arxiv.org/abs/1908.10084
+- ColBERT paper (Khattab & Zaharia, 2020): https://arxiv.org/abs/2004.12832
+- ColBERTv2 paper (Santhanam et al., 2021): https://arxiv.org/abs/2112.01488
+- ColBERT repository: https://github.com/stanford-futuredata/ColBERT
+- PyLate documentation: https://lightonai.github.io/pylate/
+- PyLate repository (ColBERT training, indexing and reranking on top of sentence-transformers): https://github.com/lightonai/pylate
 - SetFit repository: https://github.com/huggingface/setfit
 - SetFit paper (Tunstall et al., 2022): https://arxiv.org/abs/2209.11055
 - BERTopic paper (Grootendorst, 2022): https://arxiv.org/abs/2203.05794
