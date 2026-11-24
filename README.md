@@ -14,6 +14,9 @@ Read Transformers
 https://saiabhilash696.github.io/my-learnings/Transformers/04_transformers_quantization_lora_qlora_beginner_updated.html
 
 
+Read Azure RAG
+https://saiabhilash696.github.io/my-learnings/RAG/azure_rag.html
+
 
 # Things to say in interview
 
